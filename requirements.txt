@@ -3,6 +3,7 @@ pandas
 numpy
 plotly
 matplotlib
+seaborn
 requests
 pybaseball
 scipy
