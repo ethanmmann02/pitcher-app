@@ -7,3 +7,4 @@ seaborn
 requests
 pybaseball
 scipy
+scikit-learn
