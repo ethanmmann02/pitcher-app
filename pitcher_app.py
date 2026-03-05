@@ -198,6 +198,22 @@ def require_cols(df: pd.DataFrame, cols: list[str]) -> bool:
 def safe_num(x) -> pd.Series:
     return pd.to_numeric(x, errors="coerce")
 
+
+def safe_str_series(s: pd.Series) -> pd.Series:
+    """Return a string Series safe for categoricals (no new-category fillna issues)."""
+    if s is None:
+        return pd.Series([], dtype=str)
+    try:
+        if pd.api.types.is_categorical_dtype(s):
+            s = s.cat.add_categories([""]).fillna("")
+        else:
+            s = s.fillna("")
+    except Exception:
+        # Fallback for non-Series objects
+        s = pd.Series(s).fillna("")
+    return s.astype(str)
+
+
 def parse_pct(x) -> float | None:
     if x is None or (isinstance(x, float) and pd.isna(x)):
         return None
@@ -548,7 +564,7 @@ def reduce_statcast_memory(df: pd.DataFrame) -> pd.DataFrame:
     cols = [c for c in keep_cols if c in df.columns]
     df = df[cols].copy()
 
-    for c in ["pitch_type","events","description","stand","p_throws","bb_type"]:
+    for c in ["pitch_type","events","description","stand","p_throws"]:
         if c in df.columns:
             df[c] = df[c].astype("category")
     return df
@@ -821,7 +837,7 @@ def compute_zone_contact_block(sc: pd.DataFrame) -> dict[str, float | None]:
             out["xSLG (contact)"] = float(xslg.mean())
 
     if "bb_type" in df.columns:
-        bt = df["bb_type"].fillna("").astype(str)
+        bt = safe_str_series(df["bb_type"])
         bip = bt[bt.isin(["ground_ball", "line_drive", "fly_ball", "popup"])]
         denom = len(bip)
         if denom > 0:
@@ -830,7 +846,7 @@ def compute_zone_contact_block(sc: pd.DataFrame) -> dict[str, float | None]:
             out["FB%"] = float((bip == "fly_ball").mean() * 100.0)
 
             if "events" in df.columns:
-                hr = int(((df["events"].fillna("").astype(str) == "home_run") & (df.get("bb_type", "") == "fly_ball")).sum())
+                hr = int(((safe_str_series(df["events"]) == "home_run") & (df.get("bb_type", "") == "fly_ball")).sum())
                 fb = int((bip == "fly_ball").sum())
                 out["HR/FB%"] = float((hr / fb) * 100.0) if fb > 0 else None
 
