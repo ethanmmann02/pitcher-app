@@ -1028,7 +1028,7 @@ def style_red_green(
 
     return sty
 
-def style_usage_delta_table(df: pd.DataFrame, value_cols: list[str]) -> pd.io.formats.style.Styler:
+def style_usage_delta_table(df: pd.DataFrame, value_cols: list[str]):
     tmp = df.copy()
     sty = tmp.style.format({c: "{:.0f}%" for c in value_cols}, na_rep="—")
 
