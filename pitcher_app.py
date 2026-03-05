@@ -406,22 +406,27 @@ def resolve_fg_from_mlbam(pitcher_df: pd.DataFrame, mlbam_id: int) -> Optional[i
     v = hit.iloc[0].get("key_fangraphs", pd.NA)
     return int(v) if pd.notna(v) else None
 
+@st.cache_data(ttl=3600)
 def fetch_statcast_pitcher(mlbam_id: int, start_date: str, end_date: str, allowed_gt: set[str]) -> pd.DataFrame:
     def _build():
         df = retry_call(lambda: statcast_pitcher(start_date, end_date, mlbam_id), tries=3)
         df = pd.DataFrame(df) if df is not None else pd.DataFrame()
+        df = reduce_statcast_memory(df)
         df = filter_game_types(df, allowed_gt)
         return df
     return memo_by_params("sc_pitcher_v62", (APP_VERSION, mlbam_id, start_date, end_date, tuple(sorted(list(allowed_gt)))), _build)
 
+@st.cache_data(ttl=3600)
 def fetch_statcast_league_simple(start_date: str, end_date: str, allowed_gt: set[str]) -> pd.DataFrame:
     def _build():
         df = retry_call(lambda: statcast(start_date, end_date), tries=3)
         df = pd.DataFrame(df) if df is not None else pd.DataFrame()
+        df = reduce_statcast_memory(df)
         df = filter_game_types(df, allowed_gt)
         return df
     return memo_by_params("sc_league_v62", (APP_VERSION, start_date, end_date, tuple(sorted(list(allowed_gt)))), _build)
 
+@st.cache_data(ttl=3600)
 def fetch_statcast_league_chunked(
     start_date: str,
     end_date: str,
@@ -465,6 +470,7 @@ def fetch_fg_pitching_stats_year(year: int) -> pd.DataFrame:
             return pd.DataFrame()
     return memo_by_params("fg_pitching_stats_v62", (APP_VERSION, year), _build)
 
+@st.cache_data(ttl=3600)
 def fetch_statcast_pitcher_season(mlbam_id: int, year: int, allowed_gt: set[str]) -> pd.DataFrame:
     s, e = season_window_statcast(year)
     return fetch_statcast_pitcher(mlbam_id, s, e, allowed_gt)
@@ -526,6 +532,25 @@ def add_helpers(sc: pd.DataFrame) -> pd.DataFrame:
 
         df = adjust_cutter_pitch_group(df, mph_threshold=3.0)
 
+    return df
+
+
+def reduce_statcast_memory(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    keep_cols = [
+        "pitch_type","release_speed","release_spin_rate","pfx_x","pfx_z",
+        "plate_x","plate_z","launch_speed","launch_angle","events",
+        "description","zone","game_date","batter","pitcher","stand",
+        "p_throws","release_extension","arm_angle","game_pk","at_bat_number",
+        "pitch_number","balls","strikes","bb_type","estimated_woba_using_speedangle"
+    ]
+    cols = [c for c in keep_cols if c in df.columns]
+    df = df[cols].copy()
+
+    for c in ["pitch_type","events","description","stand","p_throws","bb_type"]:
+        if c in df.columns:
+            df[c] = df[c].astype("category")
     return df
 
 # =========================================================
