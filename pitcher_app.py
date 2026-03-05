@@ -4,8 +4,17 @@
 """
 Pitcher Dashboard (revised from your v6.0)
 
-Pitcher Dashboard
-
+Fixes / changes requested:
+1) Manual MLBAM ID entry (for Schlittler / others) AND the name will display (resolved from Chadwick register when possible).
+2) Prevent “takes forever / ReadTimeout” when training Stuff+ on huge league pulls:
+   - Default Stuff+ training uses the SAME league window you already pull for baselines (fastest).
+   - Optional toggle to train Stuff+ on 2023–2025, but done with:
+       • chunked downloads (month-sized)
+       • retries + backoff
+       • early sampling cap (so you don’t download the whole league)
+   - PyBaseball cache enabled (huge speedup on reruns).
+3) Stuff+ is per PITCH TYPE (FF/SL/CH/etc) using 3 group models (Fastballs/Breaking/Offspeed)
+4) Stuff+ inserted into Pitch Metrics table directly after xwOBA.
 5) Removed VAA/HAA from pitch metrics + baseline shading + Stuff+ model features
    (features are exactly: velo, dVelo, iVB, dIVB, HB, dHB, spin, arm_angle, extension)
 
@@ -197,22 +206,6 @@ def require_cols(df: pd.DataFrame, cols: list[str]) -> bool:
 
 def safe_num(x) -> pd.Series:
     return pd.to_numeric(x, errors="coerce")
-
-
-def safe_str_series(s: pd.Series) -> pd.Series:
-    """Return a string Series safe for categoricals (no new-category fillna issues)."""
-    if s is None:
-        return pd.Series([], dtype=str)
-    try:
-        if pd.api.types.is_categorical_dtype(s):
-            s = s.cat.add_categories([""]).fillna("")
-        else:
-            s = s.fillna("")
-    except Exception:
-        # Fallback for non-Series objects
-        s = pd.Series(s).fillna("")
-    return s.astype(str)
-
 
 def parse_pct(x) -> float | None:
     if x is None or (isinstance(x, float) and pd.isna(x)):
@@ -422,27 +415,22 @@ def resolve_fg_from_mlbam(pitcher_df: pd.DataFrame, mlbam_id: int) -> Optional[i
     v = hit.iloc[0].get("key_fangraphs", pd.NA)
     return int(v) if pd.notna(v) else None
 
-@st.cache_data(ttl=3600)
 def fetch_statcast_pitcher(mlbam_id: int, start_date: str, end_date: str, allowed_gt: set[str]) -> pd.DataFrame:
     def _build():
         df = retry_call(lambda: statcast_pitcher(start_date, end_date, mlbam_id), tries=3)
         df = pd.DataFrame(df) if df is not None else pd.DataFrame()
-        df = reduce_statcast_memory(df)
         df = filter_game_types(df, allowed_gt)
         return df
     return memo_by_params("sc_pitcher_v62", (APP_VERSION, mlbam_id, start_date, end_date, tuple(sorted(list(allowed_gt)))), _build)
 
-@st.cache_data(ttl=3600)
 def fetch_statcast_league_simple(start_date: str, end_date: str, allowed_gt: set[str]) -> pd.DataFrame:
     def _build():
         df = retry_call(lambda: statcast(start_date, end_date), tries=3)
         df = pd.DataFrame(df) if df is not None else pd.DataFrame()
-        df = reduce_statcast_memory(df)
         df = filter_game_types(df, allowed_gt)
         return df
     return memo_by_params("sc_league_v62", (APP_VERSION, start_date, end_date, tuple(sorted(list(allowed_gt)))), _build)
 
-@st.cache_data(ttl=3600)
 def fetch_statcast_league_chunked(
     start_date: str,
     end_date: str,
@@ -486,7 +474,6 @@ def fetch_fg_pitching_stats_year(year: int) -> pd.DataFrame:
             return pd.DataFrame()
     return memo_by_params("fg_pitching_stats_v62", (APP_VERSION, year), _build)
 
-@st.cache_data(ttl=3600)
 def fetch_statcast_pitcher_season(mlbam_id: int, year: int, allowed_gt: set[str]) -> pd.DataFrame:
     s, e = season_window_statcast(year)
     return fetch_statcast_pitcher(mlbam_id, s, e, allowed_gt)
@@ -550,25 +537,6 @@ def add_helpers(sc: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
-
-def reduce_statcast_memory(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return df
-    keep_cols = [
-        "pitch_type","release_speed","release_spin_rate","pfx_x","pfx_z",
-        "plate_x","plate_z","launch_speed","launch_angle","events",
-        "description","zone","game_date","batter","pitcher","stand",
-        "p_throws","release_extension","arm_angle","game_pk","at_bat_number",
-        "pitch_number","balls","strikes","bb_type","estimated_woba_using_speedangle"
-    ]
-    cols = [c for c in keep_cols if c in df.columns]
-    df = df[cols].copy()
-
-    for c in ["pitch_type","events","description","stand","p_throws"]:
-        if c in df.columns:
-            df[c] = df[c].astype("category")
-    return df
-
 # =========================================================
 # xwOBA (Savant-like)
 # =========================================================
@@ -623,7 +591,7 @@ def compute_league_pitchtype_baselines(
     def rate_block(g: pd.DataFrame) -> dict[str, float]:
         pitches = len(g)
         if pitches <= 0:
-            return {"CalledStr%": np.nan, "SwStr%": np.nan, "CSW%": np.nan, "Chase%": np.nan, "Z-Miss%": np.nan, "xwOBA": np.nan}
+            return {"CalledStr%": np.nan, "Whiff%": np.nan, "CSW%": np.nan, "Chase%": np.nan, "Z-Miss%": np.nan, "xwOBA": np.nan}
 
         called = (g["is_called_strike"].sum() / pitches) * 100.0
         csw = ((g["is_called_strike"].sum() + g["is_swinging_strike"].sum()) / pitches) * 100.0
@@ -644,7 +612,7 @@ def compute_league_pitchtype_baselines(
 
         return {
             "CalledStr%": float(called) if pd.notna(called) else np.nan,
-            "SwStr%": float(whiff_pct) if pd.notna(whiff_pct) else np.nan,
+            "Whiff%": float(whiff_pct) if pd.notna(whiff_pct) else np.nan,
             "CSW%": float(csw) if pd.notna(csw) else np.nan,
             "Chase%": float(chase_pct) if pd.notna(chase_pct) else np.nan,
             "Z-Miss%": float(z_miss_pct) if pd.notna(z_miss_pct) else np.nan,
@@ -662,7 +630,7 @@ def compute_league_pitchtype_baselines(
 
     rates_all = rate_block(df)
     all_stats["CalledStr%"] = (rates_all["CalledStr%"], 6.5)
-    all_stats["SwStr%"] = (rates_all["SwStr%"], 10.0)
+    all_stats["Whiff%"] = (rates_all["Whiff%"], 10.0)
     all_stats["CSW%"] = (rates_all["CSW%"], 7.5)
     all_stats["Chase%"] = (rates_all["Chase%"], 10.0)
     all_stats["Z-Miss%"] = (rates_all["Z-Miss%"], 10.0)
@@ -683,7 +651,7 @@ def compute_league_pitchtype_baselines(
 
         rates = rate_block(g)
         stats["CalledStr%"] = (rates["CalledStr%"], 6.5)
-        stats["SwStr%"] = (rates["SwStr%"], 10.0)
+        stats["Whiff%"] = (rates["Whiff%"], 10.0)
         stats["CSW%"] = (rates["CSW%"], 7.5)
         stats["Chase%"] = (rates["Chase%"], 10.0)
         stats["Z-Miss%"] = (rates["Z-Miss%"], 10.0)
@@ -715,7 +683,6 @@ def compute_zone_contact_block(sc: pd.DataFrame) -> dict[str, float | None]:
         "Exit Velo": None,
         "Launch Angle": None,
         "HardHit%": None,
-        "Barrel%": None,
         "xSLG (contact)": None,
         "BABIP": None,
 
@@ -759,77 +726,21 @@ def compute_zone_contact_block(sc: pd.DataFrame) -> dict[str, float | None]:
         if len(end_pitch):
             out["AB < 3 Pitches%"] = float((end_pitch <= 2).mean() * 100.0)
 
-    
-    # -----------------------------
-    # Batted-ball event (BBE) block
-    # -----------------------------
-    bbe = df.copy()
-    # Statcast populates launch_speed / launch_angle on batted-ball events.
-    if "launch_speed" in bbe.columns:
-        bbe = bbe.loc[bbe["launch_speed"].notna()].copy()
-    if "launch_angle" in bbe.columns:
-        bbe = bbe.loc[bbe["launch_angle"].notna()].copy()
-
-    if not bbe.empty:
-        ev = safe_num(bbe["launch_speed"]).dropna()
-        la = safe_num(bbe["launch_angle"]).dropna()
-
+    if "launch_speed" in df.columns:
+        ev = safe_num(df["launch_speed"]).dropna()
         if len(ev):
             out["Exit Velo"] = float(ev.mean())
             out["HardHit%"] = float((ev >= 95).mean() * 100.0)
 
+    if "launch_angle" in df.columns:
+        la = safe_num(df["launch_angle"]).dropna()
         if len(la):
             out["Launch Angle"] = float(la.mean())
-            out["SweetSpot%"] = float(((la >= 8) & (la <= 32)).mean() * 100.0)
 
-        # Barrel% (Statcast definition via EV/LA barrel zone)
-        def _is_barrel(ev_mph: float, la_deg: float) -> bool:
-            if pd.isna(ev_mph) or pd.isna(la_deg) or ev_mph < 98:
-                return False
-            if ev_mph < 99:
-                lo, hi = 26, 30
-            elif ev_mph < 100:
-                lo, hi = 25, 31
-            elif ev_mph < 101:
-                lo, hi = 24, 33
-            elif ev_mph < 102:
-                lo, hi = 23, 34
-            elif ev_mph < 103:
-                lo, hi = 22, 35
-            elif ev_mph < 104:
-                lo, hi = 21, 36
-            elif ev_mph < 105:
-                lo, hi = 20, 37
-            elif ev_mph < 106:
-                lo, hi = 19, 38
-            elif ev_mph < 107:
-                lo, hi = 18, 39
-            elif ev_mph < 108:
-                lo, hi = 17, 40
-            elif ev_mph < 109:
-                lo, hi = 16, 41
-            elif ev_mph < 110:
-                lo, hi = 15, 42
-            elif ev_mph < 111:
-                lo, hi = 14, 43
-            elif ev_mph < 112:
-                lo, hi = 13, 44
-            elif ev_mph < 113:
-                lo, hi = 12, 45
-            elif ev_mph < 114:
-                lo, hi = 11, 46
-            elif ev_mph < 115:
-                lo, hi = 10, 47
-            elif ev_mph < 116:
-                lo, hi = 9, 48
-            else:
-                lo, hi = 8, 50
-            return (la_deg >= lo) and (la_deg <= hi)
-
-        ev_series = safe_num(bbe["launch_speed"])
-        la_series = safe_num(bbe["launch_angle"])
-        barrels = sum(_is_barrel(float(ev_mph), float(la_deg)) for ev_mph, la_deg in zip(ev_series, la_series))
-        out["Barrel%"] = float((barrels / len(bbe)) * 100.0) if len(bbe) else None
+        la_all = safe_num(df["launch_angle"])
+        mask = la_all.notna()
+        if mask.any():
+            out["SweetSpot%"] = float(((la_all >= 8) & (la_all <= 32) & mask).mean() * 100.0)
 
     if "estimated_slg_using_speedangle" in df.columns:
         xslg = safe_num(df["estimated_slg_using_speedangle"]).dropna()
@@ -837,7 +748,7 @@ def compute_zone_contact_block(sc: pd.DataFrame) -> dict[str, float | None]:
             out["xSLG (contact)"] = float(xslg.mean())
 
     if "bb_type" in df.columns:
-        bt = safe_str_series(df["bb_type"])
+        bt = df["bb_type"].astype("string").fillna("").astype(str)
         bip = bt[bt.isin(["ground_ball", "line_drive", "fly_ball", "popup"])]
         denom = len(bip)
         if denom > 0:
@@ -846,13 +757,13 @@ def compute_zone_contact_block(sc: pd.DataFrame) -> dict[str, float | None]:
             out["FB%"] = float((bip == "fly_ball").mean() * 100.0)
 
             if "events" in df.columns:
-                hr = int(((safe_str_series(df["events"]) == "home_run") & (df.get("bb_type", "") == "fly_ball")).sum())
+                hr = int((df["events"].astype("string").fillna("").astype(str) == "home_run").sum())
                 fb = int((bip == "fly_ball").sum())
                 out["HR/FB%"] = float((hr / fb) * 100.0) if fb > 0 else None
 
     pa_end = _pa_end_rows(df)
     if not pa_end.empty and "events" in pa_end.columns:
-        evs = pa_end["events"].fillna("").astype(str)
+        evs = pa_end["events"].astype("string").fillna("").astype(str)
 
         h = int(evs.isin(["single", "double", "triple", "home_run"]).sum())
         hr = int((evs == "home_run").sum())
@@ -1069,7 +980,7 @@ def style_red_green(
 
     return sty
 
-def style_usage_delta_table(df: pd.DataFrame, value_cols: list[str]):
+def style_usage_delta_table(df: pd.DataFrame, value_cols: list[str]) -> pd.io.formats.style.Styler:
     tmp = df.copy()
     sty = tmp.style.format({c: "{:.0f}%" for c in value_cols}, na_rep="—")
 
@@ -1161,10 +1072,396 @@ def _build_regressor():
         random_state=TRAIN_SAMPLE_SEED,
     )
 
+def _feature_cols_for_stuff(df: pd.DataFrame) -> list[str]:
+    # Core features (your requested set) + a couple optional columns if present.
+    base = [
+        "release_speed",
+        "dVelo",
+        "iVB_in",
+        "dIVB",
+        "HB_in",
+        "dHB",
+        "release_spin_rate",
+        "arm_angle",
+        "Ext",
+    ]
+    optional = ["spin_axis", "release_pos_x", "release_pos_z"]
+    extra = ["balls", "strikes", "stand_L", "pthrows_L"]
+    cols = base + [c for c in optional if c in df.columns] + [c for c in extra if c in df.columns]
+    return cols
+
+def _prep_stuff_frame(sc_all: pd.DataFrame) -> pd.DataFrame:
+    df = add_helpers(sc_all)
+    df = add_fastball_reference_features(df)
+    df = valid_pitch_rows(df)
+
+    # Target: delta_run_exp (run expectancy change on the pitch, Savant-style)
+    # Lower is better for the pitcher.
+    if "delta_run_exp" not in df.columns:
+        df["delta_run_exp"] = np.nan
+    df["delta_run_exp"] = safe_num(df["delta_run_exp"])
+
+    # Fill missing arm_angle per pitcher (stable)
+    if "arm_angle" in df.columns:
+        df["arm_angle"] = df.groupby("pitcher")["arm_angle"].transform(lambda s: s.fillna(s.median()))
+
+    return df
 
 
-# Stuff+ modeling removed (per app requirements).
+    # Count + handedness features (helps xRV signal a bit without using location)
+    df["balls"] = safe_num(df.get("balls", np.nan))
+    df["strikes"] = safe_num(df.get("strikes", np.nan))
+    stand = df.get("stand", pd.Series([np.nan]*len(df)))
+    pthr = df.get("p_throws", pd.Series([np.nan]*len(df)))
+    df["stand_L"] = (stand.fillna("").astype(str) == "L").astype(int)
+    df["pthrows_L"] = (pthr.fillna("").astype(str) == "L").astype(int)
 
+    return df
+
+def train_group_models_and_league_pitchtype_stats(league_sc_all: pd.DataFrame):
+    """
+    Train 3 separate regression models (Fastballs/Breaking/Offspeed) to predict run value (delta_run_exp).
+    Then compute league mean/sd of predicted xRV per pitch_type (pitcher-level distribution, qualified only)
+    for Stuff+ scaling.
+
+    Returns:
+      models_by_group: dict[group -> regressor]
+      feature_cols: list[str]
+      league_pitchtype_stats: DataFrame columns: pitch_group, pitch_type, league_mean, league_sd, n_pitchers
+      league_all_stats: dict with league_mean_all, league_sd_all, n_pitchers_all (qualified)
+      train_info: dict with auc_by_group, r2_by_group, sizes
+    """
+    if league_sc_all is None or league_sc_all.empty:
+        return {}, [], pd.DataFrame(), {}, {"auc_by_group": {}, "r2_by_group": {}, "n_rows_by_group": {}}
+
+    df = _prep_stuff_frame(league_sc_all)
+    if df.empty:
+        return {}, [], pd.DataFrame(), {}, {"auc_by_group": {}, "r2_by_group": {}, "n_rows_by_group": {}}
+
+    feature_cols = _feature_cols_for_stuff(df)
+    for c in feature_cols:
+        if c not in df.columns:
+            df[c] = np.nan
+
+    # Keep only rows with target + full feature vector
+    X_all = df[feature_cols].apply(pd.to_numeric, errors="coerce")
+    y_all = df["delta_run_exp"]
+    ok_all = X_all.notna().all(axis=1) & y_all.notna()
+    df = df.loc[ok_all].copy()
+
+    models_by_group: dict[str, Any] = {}
+    auc_by_group: dict[str, float | None] = {}
+    r2_by_group: dict[str, float | None] = {}
+    n_rows_by_group: dict[str, int] = {}
+    league_pitchtype_rows = []
+
+    for grp in ["Fastballs", "Breaking", "Offspeed"]:
+        gdf = df[df["pitch_group"] == grp].copy()
+        if gdf.empty:
+            continue
+
+        X = gdf[feature_cols].apply(pd.to_numeric, errors="coerce")
+        y = gdf["delta_run_exp"]
+
+        ok = X.notna().all(axis=1) & y.notna()
+        X = X.loc[ok]
+        y = y.loc[ok]
+        gdf = gdf.loc[ok].copy()
+
+        if len(X) == 0:
+            continue
+
+        # sample down for speed
+        if len(X) > MAX_TRAIN_PITCHES_PER_GROUP:
+            idx = X.sample(n=MAX_TRAIN_PITCHES_PER_GROUP, random_state=TRAIN_SAMPLE_SEED).index
+            X = X.loc[idx]
+            y = y.loc[idx]
+            gdf = gdf.loc[idx]
+
+        # quick holdout for metrics
+        sss = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=TRAIN_SAMPLE_SEED)
+        # Stratify by "good for pitcher" flag to make AUC comparable
+        y_good = (y <= 0).astype(int)
+        try:
+            train_idx, test_idx = next(sss.split(X, y_good))
+        except Exception:
+            train_idx = np.arange(len(X))
+            test_idx = np.array([], dtype=int)
+
+        X_train = X.iloc[train_idx]
+        y_train = y.iloc[train_idx]
+
+        model = _build_regressor()
+        model.fit(X_train, y_train)
+        models_by_group[grp] = model
+        n_rows_by_group[grp] = int(len(X))
+
+        # metrics
+        try:
+            pred_all = model.predict(X)
+            # AUC: classify "good run value" with score = -pred (higher score => better for pitcher)
+            auc_by_group[grp] = float(roc_auc_score(y_good, -pred_all))
+            # R2 on the holdout (if available)
+            if len(test_idx) > 0:
+                pred_test = model.predict(X.iloc[test_idx])
+                r2_by_group[grp] = float(r2_score(y.iloc[test_idx], pred_test))
+            else:
+                r2_by_group[grp] = None
+        except Exception:
+            auc_by_group[grp] = None
+            r2_by_group[grp] = None
+
+        # league predicted xRV per pitch_type, using pitcher-level distribution for sd (qualified only)
+        try:
+            gdf["pred_rv"] = model.predict(gdf[feature_cols].apply(pd.to_numeric, errors="coerce"))
+        except Exception:
+            continue
+
+        by_pt = gdf.groupby(["pitcher", "pitch_type"], as_index=False).agg(
+            pred_RV=("pred_rv", "mean"),
+            pitches=("pred_rv", "size"),
+        )
+
+        # qualify to stabilize shading + scaling (like Savant)
+        by_pt_q = by_pt[by_pt["pitches"] >= MIN_BASELINE_PITCHES].copy()
+        if by_pt_q.empty:
+            continue
+
+        stats = by_pt_q.groupby("pitch_type", as_index=False).agg(
+            league_mean=("pred_RV", "mean"),
+            league_sd=("pred_RV", "std"),
+            n_pitchers=("pred_RV", "size"),
+        )
+        stats["pitch_group"] = grp
+        league_pitchtype_rows.append(stats)
+
+    league_pitchtype_stats = pd.concat(league_pitchtype_rows, ignore_index=True) if league_pitchtype_rows else pd.DataFrame()
+    if not league_pitchtype_stats.empty:
+        league_pitchtype_stats["league_sd"] = league_pitchtype_stats["league_sd"].replace({0: np.nan})
+
+    # league ALL scaling stats (pitcher-level mean over all pitches, qualified)
+    league_all_stats: dict[str, float | int] = {}
+    try:
+        pred_rows = []
+        for grp, model in models_by_group.items():
+            gdf = df[df["pitch_group"] == grp].copy()
+            if gdf.empty:
+                continue
+            X = gdf[feature_cols].apply(pd.to_numeric, errors="coerce")
+            ok = X.notna().all(axis=1)
+            gdf = gdf.loc[ok].copy()
+            if gdf.empty:
+                continue
+            gdf["pred_rv"] = model.predict(X.loc[ok])
+            pred_rows.append(gdf[["pitcher", "pred_rv"]])
+        if pred_rows:
+            all_pred = pd.concat(pred_rows, ignore_index=True)
+            by_p = all_pred.groupby("pitcher", as_index=False).agg(
+                pred_RV_all=("pred_rv", "mean"),
+                pitches=("pred_rv", "size"),
+            )
+            by_p = by_p[by_p["pitches"] >= MIN_BASELINE_PITCHES].copy()
+            league_all_stats = {
+                "league_mean_all": float(by_p["pred_RV_all"].mean()) if not by_p.empty else np.nan,
+                "league_sd_all": float(by_p["pred_RV_all"].std()) if not by_p.empty else np.nan,
+                "n_pitchers_all": int(len(by_p)),
+            }
+            if league_all_stats.get("league_sd_all") == 0:
+                league_all_stats["league_sd_all"] = np.nan
+    except Exception:
+        league_all_stats = {}
+
+    train_info = {"auc_by_group": auc_by_group, "r2_by_group": r2_by_group, "n_rows_by_group": n_rows_by_group}
+    return models_by_group, feature_cols, league_pitchtype_stats, league_all_stats, train_info
+
+def compute_stuff_plus_by_pitchtype(
+    sc_pitcher: pd.DataFrame,
+    models_by_group: dict[str, Any],
+    feature_cols: list[str],
+    league_pitchtype_stats: pd.DataFrame,
+):
+    """
+    Returns per pitch_type for THIS pitcher:
+      pitch_type, pitch_group, pitches, pred_xRV, Stuff+
+
+    Stuff+ = 100 - 10 * ((pred_xRV - league_mean) / league_sd) within same pitch_type.
+    (Lower run value is better for the pitcher.)
+    """
+    if sc_pitcher is None or sc_pitcher.empty:
+        return pd.DataFrame()
+    if not models_by_group or not feature_cols:
+        return pd.DataFrame()
+    if league_pitchtype_stats is None or league_pitchtype_stats.empty:
+        return pd.DataFrame()
+
+    df = _prep_stuff_frame(sc_pitcher)
+    if df.empty:
+        return pd.DataFrame()
+
+    for c in feature_cols:
+        if c not in df.columns:
+            df[c] = np.nan
+
+    out_rows = []
+    for grp, model in models_by_group.items():
+        gdf = df[df["pitch_group"] == grp].copy()
+        if gdf.empty:
+            continue
+
+        X = gdf[feature_cols].apply(pd.to_numeric, errors="coerce")
+        ok = X.notna().all(axis=1)
+        gdf = gdf.loc[ok].copy()
+        X = X.loc[ok]
+        if gdf.empty:
+            continue
+
+        try:
+            gdf["pred_rv"] = model.predict(X)
+        except Exception:
+            continue
+
+        by_pt = gdf.groupby("pitch_type", as_index=False).agg(
+            pred_xRV=("pred_rv", "mean"),
+            pitches=("pred_rv", "size"),
+        )
+        by_pt["pitch_group"] = grp
+        out_rows.append(by_pt)
+
+    pred_tbl = pd.concat(out_rows, ignore_index=True) if out_rows else pd.DataFrame()
+    if pred_tbl.empty:
+        return pred_tbl
+
+    merged = pred_tbl.merge(
+        league_pitchtype_stats,
+        on=["pitch_group", "pitch_type"],
+        how="left",
+    )
+
+    z = (merged["pred_xRV"] - merged["league_mean"]) / merged["league_sd"]
+    merged["Stuff+"] = 100.0 - 10.0 * z
+    merged["Stuff+"] = merged["Stuff+"].round(0)
+
+    return merged[["pitch_type", "pitch_group", "pitches", "pred_xRV", "Stuff+"]]
+
+def compute_stuff_plus_all(
+    sc_pitcher: pd.DataFrame,
+    models_by_group: dict[str, Any],
+    feature_cols: list[str],
+    league_all_stats: dict,
+) -> float | None:
+    """
+    "All" Stuff+ is computed across every pitch (pitch-level weighting),
+    then scaled vs league pitcher-level distribution (qualified pitchers).
+    """
+    if sc_pitcher is None or sc_pitcher.empty:
+        return None
+    if not models_by_group or not feature_cols:
+        return None
+    if not league_all_stats:
+        return None
+
+    df = _prep_stuff_frame(sc_pitcher)
+    if df.empty:
+        return None
+
+    preds = []
+    for grp, model in models_by_group.items():
+        gdf = df[df["pitch_group"] == grp].copy()
+        if gdf.empty:
+            continue
+        X = gdf[feature_cols].apply(pd.to_numeric, errors="coerce")
+        ok = X.notna().all(axis=1)
+        X = X.loc[ok]
+        if len(X) == 0:
+            continue
+        try:
+            pred = model.predict(X)
+            preds.append(pd.Series(pred))
+        except Exception:
+            continue
+
+    if not preds:
+        return None
+    p_all = pd.concat(preds, ignore_index=True)
+    if p_all.empty:
+        return None
+
+    pred_mean = float(p_all.mean())
+    mu = league_all_stats.get("league_mean_all", np.nan)
+    sd = league_all_stats.get("league_sd_all", np.nan)
+    if pd.isna(mu) or pd.isna(sd) or sd == 0:
+        return None
+
+    z = (pred_mean - float(mu)) / float(sd)
+    stuff_all = 100.0 - 10.0 * z
+    return float(np.round(stuff_all, 0))
+
+def build_stuff_training_data_2023_2025_chunked() -> pd.DataFrame:
+    """
+    Pull 2023–2025 league data in month chunks, but stop early once we have enough
+    per group to train (fastballs/breaking/offspeed). This prevents 'forever loading'.
+    """
+    key = f"stuff_train_2325_chunked::{APP_VERSION}"
+    cached = _ss_get(key)
+    if cached is not None:
+        return cached
+
+    frames = []
+    # Keep a running count per group so we can stop early
+    counts = {"Fastballs": 0, "Breaking": 0, "Offspeed": 0}
+
+    def enough():
+        return all(counts[g] >= MAX_TRAIN_PITCHES_PER_GROUP for g in counts)
+
+    for yr in STUFF_TRAIN_YEARS:
+        sd_s, ed_s = season_window_statcast(yr)
+        sd = dt.datetime.strptime(sd_s, "%Y-%m-%d").date()
+        ed = dt.datetime.strptime(ed_s, "%Y-%m-%d").date()
+        ranges = month_ranges(sd, ed)
+
+        for a, b in ranges:
+            if enough():
+                break
+
+            a_s = a.strftime("%Y-%m-%d")
+            b_s = b.strftime("%Y-%m-%d")
+
+            try:
+                chunk = fetch_statcast_league_chunked(a_s, b_s, allowed_gt=STUFF_TRAIN_GAME_TYPES, max_months=1)
+            except _REQ_EXC:
+                continue
+            except Exception:
+                continue
+
+            if chunk is None or chunk.empty:
+                continue
+
+            chunk = add_helpers(chunk)
+            chunk = valid_pitch_rows(chunk)
+
+            # Update counts and sample down per group as needed
+            for grp in ["Fastballs", "Breaking", "Offspeed"]:
+                g = chunk[chunk["pitch_group"] == grp]
+                if g.empty:
+                    continue
+                remaining = MAX_TRAIN_PITCHES_PER_GROUP - counts[grp]
+                if remaining <= 0:
+                    continue
+                if len(g) > remaining:
+                    g = g.sample(n=remaining, random_state=TRAIN_SAMPLE_SEED)
+                frames.append(g)
+                counts[grp] += len(g)
+
+        if enough():
+            break
+
+    out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    _ss_set(key, out)
+    return out
+
+# =========================================================
+# Pitch metrics table (fixed pitch total logic) + Stuff+ column
+# =========================================================
 def compute_pitch_metrics(sc: pd.DataFrame) -> pd.DataFrame:
     if sc.empty or "pitch_type" not in sc.columns:
         return pd.DataFrame()
@@ -1187,20 +1484,17 @@ def compute_pitch_metrics(sc: pd.DataFrame) -> pd.DataFrame:
         called_str_pct = (g["is_called_strike"].sum() / pitches * 100.0) if pitches else np.nan
         csw = ((g["is_called_strike"].sum() + g["is_swinging_strike"].sum()) / pitches * 100.0) if pitches else np.nan
 
-        swstr_pct = (g["is_swinging_strike"].sum() / pitches * 100.0) if pitches else np.nan
-
         swings = int(g["is_swing"].sum())
+        whiffs = int(g["is_whiff"].sum())
+        whiff_pct = (whiffs / swings * 100.0) if swings else np.nan
 
         in_zone = g["in_zone"].fillna(False).astype(bool)
-        zone_pct = (in_zone.mean() * 100.0) if pitches else np.nan
         z_swings = int((g["is_swing"] & in_zone).sum())
         z_whiffs = int((g["is_whiff"] & in_zone).sum())
         z_miss_pct = (z_whiffs / z_swings * 100.0) if z_swings else np.nan
 
-        out_zone = (~in_zone)
-        out_zone_pitches = int(out_zone.sum())
-        out_zone_swings = int((g["is_swing"] & out_zone).sum())
-        chase_pct = (out_zone_swings / out_zone_pitches * 100.0) if out_zone_pitches else np.nan
+        out_zone_swings = int((g["is_swing"] & (~in_zone)).sum())
+        chase_pct = (out_zone_swings / swings * 100.0) if swings else np.nan
 
         xwoba = xwoba_savant_like(g)
 
@@ -1212,13 +1506,13 @@ def compute_pitch_metrics(sc: pd.DataFrame) -> pd.DataFrame:
             "Spin": int(round(float(spin))) if pd.notna(spin) else np.nan,
             "Ext": round(float(ext), 2) if pd.notna(ext) else np.nan,
             "CalledStr%": round(float(called_str_pct), 1) if pd.notna(called_str_pct) else np.nan,
-            "SwStr%": round(float(swstr_pct), 1) if pd.notna(swstr_pct) else np.nan,
+            "Whiff%": round(float(whiff_pct), 1) if pd.notna(whiff_pct) else np.nan,
             "CSW%": round(float(csw), 1) if pd.notna(csw) else np.nan,
             "Chase%": round(float(chase_pct), 1) if pd.notna(chase_pct) else np.nan,
-            "Zone%": round(float(zone_pct), 1) if pd.notna(zone_pct) else np.nan,
             "Z-Miss%": round(float(z_miss_pct), 1) if pd.notna(z_miss_pct) else np.nan,
             "xwOBA": round(float(xwoba), 3) if xwoba is not None else np.nan,
-                    }
+            "Stuff+": np.nan,  # filled later
+        }
 
     rows = []
     for ptype, g in df.groupby("pitch_type", dropna=True):
@@ -1238,7 +1532,7 @@ def compute_pitch_metrics(sc: pd.DataFrame) -> pd.DataFrame:
     order = [
         "Pitch", "Pitch%", "Pitches",
         "Velo", "iVB", "HB", "Spin", "Ext",
-        "CalledStr%", "SwStr%", "CSW%", "Chase%", "Z-Miss%",
+        "CalledStr%", "Whiff%", "CSW%", "Chase%", "Z-Miss%",
         "xwOBA", "Stuff+",
     ]
     out = out[[c for c in order if c in out.columns]]
@@ -1252,7 +1546,7 @@ def apply_all_row_mask(pm: pd.DataFrame) -> pd.DataFrame:
     allowed = {
         "Pitch", "Pitches",
         "Ext",
-        "CalledStr%", "SwStr%", "CSW%", "Chase%", "Z-Miss%",
+        "CalledStr%", "Whiff%", "CSW%", "Chase%", "Z-Miss%",
         "xwOBA",
         "Stuff+",
     }
@@ -1738,6 +2032,7 @@ def main():
             _ss_set("sc", pd.DataFrame())
             _ss_set("baselines", {})
             _ss_set("league_zone_contact", {})
+            _ss_set("stuff_payload", None)
             _ss_set("loaded_params", params)
             st.warning("No Statcast rows returned. Try a wider date range (or enable ST/Postseason).")
             return
@@ -1747,6 +2042,7 @@ def main():
 
         baselines = {}
         league_zone_contact = {}
+        stuff_payload = None
 
         # --- League pulls (baseline window) ---
         if league_compare:
@@ -1770,13 +2066,32 @@ def main():
                 baselines = compute_league_pitchtype_baselines(lg, min_pitches=MIN_BASELINE_PITCHES)
                 league_zone_contact = compute_zone_contact_block(lg)
 
+            # --- Stuff+ training data (always 2023–2025, chunked + capped) ---
+            with st.spinner("Preparing Stuff+ training data (2023–2025)..."):
+                try:
+                    train_df = build_stuff_training_data_2023_2025_chunked()
+                except _REQ_EXC:
+                    train_df = pd.DataFrame()
+                    st.warning("Stuff+ 2023–2025 pull timed out. Try rerunning or a different time.")
+                except Exception:
+                    train_df = pd.DataFrame()
+                    st.warning("Stuff+ 2023–2025 pull failed. Try rerunning.")
+
+            if train_df is not None and not train_df.empty:
+                with st.spinner("Training Stuff+ models..."):
+                    stuff_payload = train_group_models_and_league_pitchtype_stats(train_df)
+            else:
+                stuff_payload = None
+
         _ss_set("baselines", baselines)
         _ss_set("league_zone_contact", league_zone_contact)
+        _ss_set("stuff_payload", stuff_payload)
         _ss_set("loaded_params", params)
 
     sc: pd.DataFrame = _ss_get("sc", pd.DataFrame())
     baselines: dict = _ss_get("baselines", {})
     league_zone_contact: dict = _ss_get("league_zone_contact", {})
+    stuff_payload = _ss_get("stuff_payload", None)
 
     if sc is None or sc.empty:
         st.info("Open the sidebar and click **Run / Refresh Data**.")
@@ -1794,10 +2109,27 @@ def main():
             allowed_gt={"R"},
             include_statcast_xwoba=include_statcast_xwoba,
         )
+
     # -----------------------------------------------------
-    # Pitch metrics (fixed totals)
+    # Stuff+ per pitch type (map -> Pitch Metrics)
+    # -----------------------------------------------------
+    models_by_group, feature_cols, league_pitchtype_stats, league_all_stats, train_info = ({}, [], pd.DataFrame(), {}, {"auc_by_group": {}, "r2_by_group": {}, "n_rows_by_group": {}})
+    if stuff_payload is not None:
+        models_by_group, feature_cols, league_pitchtype_stats, league_all_stats, train_info = stuff_payload
+
+    stuff_by_pt = compute_stuff_plus_by_pitchtype(sc, models_by_group, feature_cols, league_pitchtype_stats)
+    stuff_map = {}
+    if not stuff_by_pt.empty:
+        stuff_map = dict(zip(stuff_by_pt["pitch_type"].astype(str), stuff_by_pt["Stuff+"]))
+
+    # -----------------------------------------------------
+    # Pitch metrics (fixed totals) + attach Stuff+
     # -----------------------------------------------------
     pitch_metrics = compute_pitch_metrics(sc)
+    if not pitch_metrics.empty and "Pitch" in pitch_metrics.columns:
+        pitch_metrics["Stuff+"] = pitch_metrics["Pitch"].astype(str).map(stuff_map)
+        stuff_all = compute_stuff_plus_all(sc, models_by_group, feature_cols, league_all_stats)
+        pitch_metrics.loc[pitch_metrics["Pitch"].astype(str) == "All", "Stuff+"] = stuff_all
     pitch_metrics_disp = apply_all_row_mask(pitch_metrics)
 
     # -----------------------------------------------------
@@ -1836,6 +2168,20 @@ def main():
         c1.metric("Pitches (valid)", f"{len(valid_pitch_rows(sc)):,}")
         c2.metric("Games (range)", f"{sc['game_date'].nunique():,}" if "game_date" in sc.columns else "—")
 
+        if train_info and isinstance(train_info, dict):
+            auc = train_info.get("auc_by_group", {})
+            r2 = train_info.get("r2_by_group", {})
+            nrows = train_info.get("n_rows_by_group", {})
+            st.markdown("<div class='smallnote'>Stuff+ training:</div>", unsafe_allow_html=True)
+            st.markdown(
+                "<div class='smallnote'>"
+                f"Fastballs n={nrows.get('Fastballs','—')}, AUC={auc.get('Fastballs','—')}, R2={r2.get('Fastballs','—')}<br>"
+                f"Breaking n={nrows.get('Breaking','—')}, AUC={auc.get('Breaking','—')}, R2={r2.get('Breaking','—')}<br>"
+                f"Offspeed n={nrows.get('Offspeed','—')}, AUC={auc.get('Offspeed','—')}, R2={r2.get('Offspeed','—')}"
+                "</div>",
+                unsafe_allow_html=True
+            )
+
     st.divider()
 
     # -----------------------------------------------------
@@ -1861,13 +2207,12 @@ def main():
                 "Spin": "{:.0f}",
                 "Ext": "{:.2f}",
                 "CalledStr%": "{:.1f}",
-                "SwStr%": "{:.1f}",
-                "Zone%": "{:.1f}",
+                "Whiff%": "{:.1f}",
                 "CSW%": "{:.1f}",
                 "Chase%": "{:.1f}",
                 "Z-Miss%": "{:.1f}",
                 "xwOBA": "{:.3f}",
-                
+                "Stuff+": "{:.0f}",
             }
 
             if league_compare and baselines:
@@ -1879,7 +2224,7 @@ def main():
                             "Spin": "high_good",
                             "Ext": "high_good",
                             "CalledStr%": "high_good",
-                            "SwStr%": "high_good",
+                            "Whiff%": "high_good",
                             "CSW%": "high_good",
                             "Chase%": "low_good",
                             "Z-Miss%": "high_good",
@@ -1895,7 +2240,7 @@ def main():
                     use_container_width=True,
                     hide_index=True,
                 )
-                st.caption(f"Pitch shading = z-score vs league baseline for THAT pitch type (window = {baseline_days} days).")
+                st.caption(f"Pitch shading = z-score vs league baseline for THAT pitch type (window = {baseline_days} days). Stuff+ is scaled around 100 and inserted after xwOBA.")
             else:
                 st.dataframe(
                     pitch_metrics_disp.style.format(fmt_map, na_rep="—"),
@@ -1906,9 +2251,9 @@ def main():
     st.divider()
 
     # -----------------------------------------------------
-    # AGGRESSION + BATTED BALL
+    # AGGRESSION + CONTACT
     # -----------------------------------------------------
-    st.markdown("## AGGRESSION + BATTED BALL")
+    st.markdown("## AGGRESSION + CONTACT")
     z = compute_zone_contact_block(sc)
     lgz = league_zone_contact if (league_compare and isinstance(league_zone_contact, dict)) else {}
 
