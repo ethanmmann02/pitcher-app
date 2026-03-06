@@ -29,33 +29,6 @@ from matplotlib.patches import Rectangle, Circle, FancyBboxPatch
 
 import plotly.graph_objects as go
 
-# -----------------------------
-# Simple in-memory memo helpers
-# -----------------------------
-from functools import lru_cache
-import hashlib
-import json
-
-_MEMO_STORE = {}
-
-def memo(key: str, func):
-    """Simple memoization for expensive operations."""
-    if key not in _MEMO_STORE:
-        _MEMO_STORE[key] = func()
-    return _MEMO_STORE[key]
-
-def memo_by_params(prefix: str, *params, func=None):
-    """Memoization where cache key depends on parameters."""
-    key_raw = prefix + json.dumps(params, sort_keys=True, default=str)
-    key = hashlib.md5(key_raw.encode()).hexdigest()
-
-    if key not in _MEMO_STORE:
-        if func is None:
-            raise ValueError("memo_by_params requires func=")
-        _MEMO_STORE[key] = func()
-
-    return _MEMO_STORE[key]
-
 from pybaseball import (
     statcast_pitcher,
     statcast,
@@ -87,7 +60,7 @@ except Exception:
 # =========================================================
 # IMPORTANT: bump APP_VERSION whenever you change logic
 # =========================================================
-APP_VERSION = "v6.5"
+APP_VERSION = "v6.4"
 
 # =========================================================
 # Page config + light CSS
@@ -196,51 +169,25 @@ STUFF_TRAIN_GAME_TYPES = {"R"}  # train on regular season only
 MAX_TRAIN_PITCHES_PER_GROUP = 250_000
 TRAIN_SAMPLE_SEED = 42
 
-
-MIN_SUPPORTED_SEASON = 2023
-CACHE_TTL_SECONDS = 12 * 60 * 60
-MAX_SEASON_SUMMARY_YEARS = 3
-
-
-def _cache_set_key(allowed_gt: set[str] | tuple[str, ...] | list[str]) -> tuple[str, ...]:
-    return tuple(sorted(str(x) for x in allowed_gt))
-
-
-def optimize_dataframe_memory(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return pd.DataFrame() if df is None else df
-
-    out = df.copy()
-
-    for col in out.columns:
-        s = out[col]
-        if pd.api.types.is_integer_dtype(s):
-            out[col] = pd.to_numeric(s, downcast="integer")
-        elif pd.api.types.is_float_dtype(s):
-            out[col] = pd.to_numeric(s, downcast="float")
-        elif pd.api.types.is_object_dtype(s):
-            non_null = s.dropna()
-            if len(non_null) == 0:
-                continue
-            nunique = non_null.nunique()
-            if nunique <= min(200, max(10, int(len(non_null) * 0.25))):
-                out[col] = s.astype("category")
-
-    return out
-
-
-def season_year_options() -> list[int]:
-    current_year = dt.date.today().year
-    return list(range(current_year, MIN_SUPPORTED_SEASON - 1, -1))
-
 # =========================================================
-# Session-state helpers
+# Session-state memo helpers (avoid st.cache_* issues)
 # =========================================================
 def _ss_get(key: str, default=None):
     return st.session_state.get(key, default)
 
 def _ss_set(key: str, value):
     st.session_state[key] = value
+
+def memo(key: str, builder):
+    if key in st.session_state:
+        return st.session_state[key]
+    v = builder()
+    st.session_state[key] = v
+    return v
+
+def memo_by_params(prefix: str, params: tuple, builder):
+    key = f"{prefix}::{hash(params)}"
+    return memo(key, builder)
 
 # =========================================================
 # Helpers
@@ -459,19 +406,21 @@ def resolve_fg_from_mlbam(pitcher_df: pd.DataFrame, mlbam_id: int) -> Optional[i
     v = hit.iloc[0].get("key_fangraphs", pd.NA)
     return int(v) if pd.notna(v) else None
 
-@st.cache_data(show_spinner=False, ttl=CACHE_TTL_SECONDS, persist="disk")
-def fetch_statcast_pitcher(mlbam_id: int, start_date: str, end_date: str, allowed_gt_key: tuple[str, ...]) -> pd.DataFrame:
-    df = retry_call(lambda: statcast_pitcher(start_date, end_date, mlbam_id), tries=3)
-    df = pd.DataFrame(df) if df is not None else pd.DataFrame()
-    df = filter_game_types(df, set(allowed_gt_key))
-    return optimize_dataframe_memory(df)
+def fetch_statcast_pitcher(mlbam_id: int, start_date: str, end_date: str, allowed_gt: set[str]) -> pd.DataFrame:
+    def _build():
+        df = retry_call(lambda: statcast_pitcher(start_date, end_date, mlbam_id), tries=3)
+        df = pd.DataFrame(df) if df is not None else pd.DataFrame()
+        df = filter_game_types(df, allowed_gt)
+        return df
+    return memo_by_params("sc_pitcher_v62", (APP_VERSION, mlbam_id, start_date, end_date, tuple(sorted(list(allowed_gt)))), _build)
 
-@st.cache_data(show_spinner=False, ttl=CACHE_TTL_SECONDS, persist="disk")
-def fetch_statcast_league_simple(start_date: str, end_date: str, allowed_gt_key: tuple[str, ...]) -> pd.DataFrame:
-    df = retry_call(lambda: statcast(start_date, end_date), tries=3)
-    df = pd.DataFrame(df) if df is not None else pd.DataFrame()
-    df = filter_game_types(df, set(allowed_gt_key))
-    return optimize_dataframe_memory(df)
+def fetch_statcast_league_simple(start_date: str, end_date: str, allowed_gt: set[str]) -> pd.DataFrame:
+    def _build():
+        df = retry_call(lambda: statcast(start_date, end_date), tries=3)
+        df = pd.DataFrame(df) if df is not None else pd.DataFrame()
+        df = filter_game_types(df, allowed_gt)
+        return df
+    return memo_by_params("sc_league_v62", (APP_VERSION, start_date, end_date, tuple(sorted(list(allowed_gt)))), _build)
 
 def fetch_statcast_league_chunked(
     start_date: str,
@@ -507,18 +456,18 @@ def fetch_statcast_league_chunked(
         _build
     )
 
-@st.cache_data(show_spinner=False, ttl=CACHE_TTL_SECONDS, persist="disk")
 def fetch_fg_pitching_stats_year(year: int) -> pd.DataFrame:
-    try:
-        df = pitching_stats(year, qual=0)
-        df = pd.DataFrame(df) if df is not None else pd.DataFrame()
-    except Exception:
-        df = pd.DataFrame()
-    return optimize_dataframe_memory(df)
+    def _build():
+        try:
+            df = pitching_stats(year, qual=0)
+            return pd.DataFrame(df) if df is not None else pd.DataFrame()
+        except Exception:
+            return pd.DataFrame()
+    return memo_by_params("fg_pitching_stats_v62", (APP_VERSION, year), _build)
 
 def fetch_statcast_pitcher_season(mlbam_id: int, year: int, allowed_gt: set[str]) -> pd.DataFrame:
     s, e = season_window_statcast(year)
-    return fetch_statcast_pitcher(mlbam_id, s, e, _cache_set_key(allowed_gt))
+    return fetch_statcast_pitcher(mlbam_id, s, e, allowed_gt)
 
 def pitcher_first_last_dates(mlbam_id: int, year: int, allowed_gt: set[str]) -> tuple[Optional[dt.date], Optional[dt.date]]:
     sc = fetch_statcast_pitcher_season(mlbam_id, year, allowed_gt)
@@ -936,7 +885,7 @@ def build_last_3_seasons_summary(
     allowed_gt: set[str],
     include_statcast_xwoba: bool = True,
 ) -> pd.DataFrame:
-    years = [yr for yr in range(current_year, max(MIN_SUPPORTED_SEASON - 1, current_year - MAX_SEASON_SUMMARY_YEARS), -1)]
+    years = [current_year, current_year - 1, current_year - 2]
     rows = []
 
     def _num(v):
@@ -1623,7 +1572,6 @@ def plot_trends_plotly(tr: pd.DataFrame, variables: list[str], normalize: bool):
 # =========================================================
 def main():
     st.title("PITCHER DASHBOARD")
-    st.caption("Cached for faster reloads. Seasons limited to 2023 and later.")
 
     pitcher_df = load_pitcher_dropdown()
 
@@ -1649,10 +1597,8 @@ def main():
         use_manual_fg = pd.notna(manual_fg_id)
 
         today = dt.date.today()
-        default_year = max(today.year, MIN_SUPPORTED_SEASON)
-        season_options = season_year_options()
-        default_index = 0 if default_year in season_options else season_options.index(season_options[0])
-        season_year = st.selectbox("Season year", options=season_options, index=default_index)
+        default_year = today.year
+        season_year = st.selectbox("Season year", options=list(range(default_year, default_year - 6, -1)), index=0)
 
         if use_manual:
             mlbam_id = int(manual_id)
@@ -1700,13 +1646,13 @@ def main():
         baseline_days = st.slider(
             "League baseline window (days, for comparisons)",
             min_value=7, max_value=90, value=30, step=1,
-            help="Used for pitch-type shading + Zone/Contact deltas."
+            help="Used for pitch-type shading + Zone/Contact deltas + default Stuff+ training window."
         )
 
         st.divider()
 
         st.divider()
-        include_statcast_xwoba = st.checkbox("Include xwOBA in Season Summary (Statcast)", value=False)
+        include_statcast_xwoba = st.checkbox("Include xwOBA in Season Summary (Statcast)", value=True)
 
         st.divider()
         trend_keys = list(TREND_LABELS.keys())
@@ -1739,7 +1685,7 @@ def main():
         # --- Pitcher pull ---
         with st.spinner("Fetching Statcast pitcher data..."):
             try:
-                sc_raw = fetch_statcast_pitcher(mlbam_id, start_str, end_str, _cache_set_key(allowed_gt))
+                sc_raw = fetch_statcast_pitcher(mlbam_id, start_str, end_str, allowed_gt=allowed_gt)
             except _REQ_EXC:
                 st.error("Statcast pitcher pull timed out. Try a smaller date range and rerun.")
                 return
@@ -1773,10 +1719,10 @@ def main():
                     lg = fetch_statcast_league_simple(base_start_str, base_end_str, allowed_gt=allowed_gt)
                 except _REQ_EXC:
                     lg = pd.DataFrame()
-                    st.warning("League pull timed out (baseline window). Pitch shading may be unavailable.")
+                    st.warning("League pull timed out (baseline window). Pitch shading + Stuff+ may be unavailable.")
                 except Exception:
                     lg = pd.DataFrame()
-                    st.warning("League pull failed (baseline window). Pitch shading may be unavailable.")
+                    st.warning("League pull failed (baseline window). Pitch shading + Stuff+ may be unavailable.")
 
             if lg is not None and not lg.empty:
                 lg = add_helpers(lg)
