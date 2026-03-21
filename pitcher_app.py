@@ -887,7 +887,7 @@ def build_last_3_seasons_summary(
     allowed_gt: set[str],
     include_statcast_xwoba: bool = True,
 ) -> pd.DataFrame:
-    years = [current_year, current_year - 1, current_year - 2]
+    years = [2026, 2025]
     rows = []
 
     def _num(v):
@@ -1600,7 +1600,7 @@ def main():
 
         today = dt.date.today()
         default_year = today.year
-        season_year = st.selectbox("Season year", options=list(range(default_year, default_year - 6, -1)), index=0)
+        season_year = st.selectbox("Season year", options=[2026, 2025], index=0)
 
         if use_manual:
             mlbam_id = int(manual_id)
