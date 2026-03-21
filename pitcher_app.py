@@ -60,7 +60,7 @@ except Exception:
 # =========================================================
 # IMPORTANT: bump APP_VERSION whenever you change logic
 # =========================================================
-APP_VERSION = "v6.4"
+APP_VERSION = "v6.5"
 
 # =========================================================
 # Page config + light CSS
@@ -535,13 +535,15 @@ def xwoba_savant_like(pitches_df: pd.DataFrame) -> float | None:
     if pitches_df is None or pitches_df.empty:
         return None
 
-    denom = safe_num(pitches_df.get("woba_denom", pd.Series(dtype=float)))
-    w = safe_num(pitches_df.get("woba_value", pd.Series(dtype=float)))
-    xw = safe_num(pitches_df.get("estimated_woba_using_speedangle", pd.Series(dtype=float)))
+    # Reset index to avoid pandas 2.x index-alignment errors when called on
+    # groupby slices (non-contiguous indices cause TypeError on .loc[mask] assign)
+    df = pitches_df.reset_index(drop=True)
 
-    xw_filled = xw.copy()
-    mask = xw_filled.isna()
-    xw_filled.loc[mask] = w.loc[mask]
+    denom = safe_num(df.get("woba_denom", pd.Series(dtype=float)))
+    w = safe_num(df.get("woba_value", pd.Series(dtype=float)))
+    xw = safe_num(df.get("estimated_woba_using_speedangle", pd.Series(dtype=float)))
+
+    xw_filled = pd.Series(np.where(xw.isna(), w.astype(float), xw.astype(float)), dtype=float)
 
     ok = (denom > 0) & denom.notna()
     if not ok.any():
