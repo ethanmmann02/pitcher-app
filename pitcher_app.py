@@ -285,6 +285,8 @@ def fmt_ip_from_fg(ip_fg: float | int | None) -> str | None:
     return fmt_ip_from_outs(outs) if outs is not None else None
 
 def season_window_statcast(year: int) -> tuple[str, str]:
+    if year == 2025:
+        return (f"{year}-03-27", f"{year}-09-28")
     return (f"{year}-02-10", f"{year}-12-15")
 
 def allowed_game_types(include_st: bool, include_post: bool) -> set[str]:
