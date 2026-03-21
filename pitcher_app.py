@@ -1602,7 +1602,7 @@ def main():
 
         today = dt.date.today()
         default_year = today.year
-        season_year = st.selectbox("Season year", options=[2026, 2025], index=0)
+        season_year = st.selectbox("Season year", options=[2026], index=0)
 
         if use_manual:
             mlbam_id = int(manual_id)
@@ -1772,7 +1772,7 @@ def main():
         st.subheader(display_name.upper())
         st.caption(f"{start_str} → {end_str}   ·   game_types={','.join(sorted(list(allowed_gt)))}   ·   app={APP_VERSION}")
 
-        st.markdown("### SEASON SUMMARY (LAST 3 SEASONS)")
+        st.markdown("### SEASON SUMMARY")
         if season_tbl.empty:
             st.info("No season summary available (likely no FG seasons + no Statcast rows).")
         else:
