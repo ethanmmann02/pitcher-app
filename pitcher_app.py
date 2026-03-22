@@ -501,6 +501,35 @@ def add_helpers(sc: pd.DataFrame) -> pd.DataFrame:
     else:
         df["arm_angle"] = np.nan
 
+    # VAA, HAA, vRel, hRel
+    if all(c in df.columns for c in ["vz0", "vy0", "vx0", "az", "ay", "ax"]):
+        vy0 = safe_num(df["vy0"])
+        vz0 = safe_num(df["vz0"])
+        vx0 = safe_num(df["vx0"])
+        ay = safe_num(df["ay"])
+        az = safe_num(df["az"])
+        ax = safe_num(df["ax"])
+        # distance from release to plate ~60.5 - release_pos_y
+        t = (-vy0 - np.sqrt(vy0**2 + 2*ay*(17/12))) / ay
+        vz_plate = vz0 + az * t
+        vy_plate = vy0 + ay * t
+        vx_plate = vx0 + ax * t
+        df["VAA"] = np.degrees(np.arctan(vz_plate / np.abs(vy_plate)))
+        df["HAA"] = np.degrees(np.arctan(vx_plate / np.abs(vy_plate)))
+    else:
+        df["VAA"] = np.nan
+        df["HAA"] = np.nan
+
+    if "release_pos_z" in df.columns:
+        df["vRel"] = safe_num(df["release_pos_z"])
+    else:
+        df["vRel"] = np.nan
+
+    if "release_pos_x" in df.columns:
+        df["hRel"] = safe_num(df["release_pos_x"])
+    else:
+        df["hRel"] = np.nan
+
     if "description" in df.columns:
         df["is_swing"] = df["description"].isin(SWING_DESCRIPTIONS)
         df["is_whiff"] = df["description"].isin(WHIFF_DESCRIPTIONS)
@@ -1146,6 +1175,10 @@ def compute_pitch_metrics(sc: pd.DataFrame) -> pd.DataFrame:
         ivb = safe_num(g.get("iVB_in", pd.Series(dtype=float))).mean()
         hb = safe_num(g.get("HB_in", pd.Series(dtype=float))).mean()
         ext = safe_num(g.get("Ext", pd.Series(dtype=float))).mean()
+        vaa = safe_num(g.get("VAA", pd.Series(dtype=float))).mean()
+        haa = safe_num(g.get("HAA", pd.Series(dtype=float))).mean()
+        vrel = safe_num(g.get("vRel", pd.Series(dtype=float))).mean()
+        hrel = safe_num(g.get("hRel", pd.Series(dtype=float))).mean()
 
         called_str_pct = (g["is_called_strike"].sum() / pitches * 100.0) if pitches else np.nan
         csw = ((g["is_called_strike"].sum() + g["is_swinging_strike"].sum()) / pitches * 100.0) if pitches else np.nan
@@ -1181,6 +1214,8 @@ def compute_pitch_metrics(sc: pd.DataFrame) -> pd.DataFrame:
             "Zone%": round(float(zone_pct), 1) if pd.notna(zone_pct) else np.nan,
             "Z-Miss%": round(float(z_miss_pct), 1) if pd.notna(z_miss_pct) else np.nan,
             "xwOBA": round(float(xwoba), 3) if xwoba is not None else np.nan,
+            "vRel": round(float(vrel), 1) if pd.notna(vrel) else np.nan,
+            "hRel": round(float(hrel), 1) if pd.notna(hrel) else np.nan,
                     }
 
     rows = []
@@ -1200,7 +1235,7 @@ def compute_pitch_metrics(sc: pd.DataFrame) -> pd.DataFrame:
     # order with Stuff+ after xwOBA
     order = [
         "Pitch", "Pitch%", "Pitches",
-        "Velo", "iVB", "HB", "Spin", "Ext",
+        "Velo", "iVB", "HB", "Spin", "vRel", "hRel", "Ext",
         "CalledStr%", "SwStr%", "CSW%", "Chase%", "Z-Miss%",
         "xwOBA", "Stuff+",
     ]
@@ -1440,7 +1475,7 @@ def plot_heatmap_contour(sc: pd.DataFrame, hand: str, pitch_group: str, mode: st
                 y="plate_z",
                 fill=True,
                 levels=9,
-                thresh=0.08,
+                thresh=0.35,
                 weights=weights,
                 cmap="RdBu_r",
                 ax=ax,
@@ -1554,7 +1589,9 @@ def plot_trends_plotly(tr: pd.DataFrame, variables: list[str], normalize: bool):
         y_max = float(y_concat.max())
         span = max(y_max - y_min, 1e-6)
         pad = 0.05 * span
-        y_range = [y_min - pad, y_max + pad]
+        span = max(y_max - y_min, 1e-6)
+        context_pad = max(span * 2.0, 1.0)
+        y_range = [y_min - context_pad, y_max + context_pad]
 
     fig.update_layout(
         height=420,
@@ -1784,6 +1821,10 @@ def main():
                 "BB%": "{:.2f}",
                 "K-BB%": "{:.2f}",
                 "xwOBA": "{:.3f}",
+                "VAA": "{:.1f}",
+                "HAA": "{:.1f}",
+                "vRel": "{:.1f}",
+                "hRel": "{:.1f}",
             }
             st.dataframe(
                 season_tbl.style.format(season_fmt, na_rep="—"),
@@ -1830,6 +1871,10 @@ def main():
                 "Chase%": "{:.1f}",
                 "Z-Miss%": "{:.1f}",
                 "xwOBA": "{:.3f}",
+                "VAA": "{:.1f}",
+                "HAA": "{:.1f}",
+                "vRel": "{:.1f}",
+                "hRel": "{:.1f}",
                 
             }
 
@@ -2001,12 +2046,45 @@ def main():
         st.info("Select at least one trend metric in the sidebar.")
         return
 
-    tr = trend_by_game(sc, trend_vars, pitch_filter=trend_pitch)
-    if tr.empty:
-        st.info("No trend rows for this selection (try a wider range or different pitch filter).")
-        return
-
-    plot_trends_plotly(tr, trend_vars, normalize=normalize)
+    if trend_pitch == "(All)" and "pitch_type" in sc.columns:
+        pitch_types_present = sorted(valid_pitch_rows(sc)["pitch_type"].dropna().astype(str).unique().tolist())
+        fig = go.Figure()
+        opp = None
+        for ptype in pitch_types_present:
+            tr_p = trend_by_game(sc, trend_vars, pitch_filter=ptype)
+            if tr_p.empty:
+                continue
+            color = PITCH_COLORS.get(ptype, "#9e9e9e")
+            label = PITCH_NAMES.get(ptype, ptype)
+            for v in trend_vars:
+                if v not in tr_p.columns:
+                    continue
+                y = safe_num(tr_p[v])
+                hover = "Date: " + tr_p["game_date"].dt.strftime("%Y-%m-%d").astype(str) + "<br>" + label + ": " + y.round(3).astype(str)
+                fig.add_trace(go.Scatter(
+                    x=tr_p["game_date"],
+                    y=y,
+                    mode="lines+markers",
+                    name=f"{label}" + (f" ({TREND_LABELS.get(v,v)})" if len(trend_vars) > 1 else ""),
+                    line=dict(color=color),
+                    hovertext=hover,
+                    hoverinfo="text",
+                ))
+        fig.update_layout(
+            height=420,
+            margin=dict(l=40, r=20, t=40, b=40),
+            xaxis=dict(title="Date", tickformat="%b %d", showgrid=True, tickangle=-25),
+            yaxis=dict(title="Value", showgrid=True),
+            legend=dict(orientation="v", x=1.02, y=1.0),
+            hovermode="x unified",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        tr = trend_by_game(sc, trend_vars, pitch_filter=trend_pitch)
+        if tr.empty:
+            st.info("No trend rows for this selection (try a wider range or different pitch filter).")
+            return
+        plot_trends_plotly(tr, trend_vars, normalize=normalize)
 
 if __name__ == "__main__":
     main()
