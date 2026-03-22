@@ -359,6 +359,7 @@ def retry_call(fn, tries: int = 3, base_sleep: float = 1.25):
 # =========================================================
 # Data loading
 # =========================================================
+@st.cache_data(ttl=86400, show_spinner=False)
 def load_pitcher_dropdown() -> pd.DataFrame:
     """
     Inclusive pitcher list using Chadwick register.
@@ -416,13 +417,12 @@ def fetch_statcast_pitcher(mlbam_id: int, start_date: str, end_date: str, allowe
         return df
     return memo_by_params("sc_pitcher_v62", (APP_VERSION, mlbam_id, start_date, end_date, tuple(sorted(list(allowed_gt)))), _build)
 
-def fetch_statcast_league_simple(start_date: str, end_date: str, allowed_gt: set[str]) -> pd.DataFrame:
-    def _build():
-        df = retry_call(lambda: statcast(start_date, end_date), tries=3)
-        df = pd.DataFrame(df) if df is not None else pd.DataFrame()
-        df = filter_game_types(df, allowed_gt)
-        return df
-    return memo_by_params("sc_league_v62", (APP_VERSION, start_date, end_date, tuple(sorted(list(allowed_gt)))), _build)
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_statcast_league_simple(start_date: str, end_date: str, allowed_gt: frozenset) -> pd.DataFrame:
+    df = retry_call(lambda: statcast(start_date, end_date), tries=3)
+    df = pd.DataFrame(df) if df is not None else pd.DataFrame()
+    df = filter_game_types(df, set(allowed_gt))
+    return df
 
 def fetch_statcast_league_chunked(
     start_date: str,
@@ -1757,7 +1757,7 @@ def main():
 
             with st.spinner(f"Fetching league Statcast ({baseline_days}d window) ..."):
                 try:
-                    lg = fetch_statcast_league_simple(base_start_str, base_end_str, allowed_gt=allowed_gt)
+                    lg = fetch_statcast_league_simple(base_start_str, base_end_str, allowed_gt=frozenset(allowed_gt))
                 except _REQ_EXC:
                     lg = pd.DataFrame()
                     st.warning("League pull timed out (baseline window). Pitch shading + Stuff+ may be unavailable.")
