@@ -391,6 +391,26 @@ def load_pitcher_dropdown() -> pd.DataFrame:
 
         reg = reg[reg["display"].astype(str).str.len() > 0].copy()
         reg = reg.drop_duplicates(subset=["display", "key_mlbam"], keep="first")
+
+        # Filter to only pitchers who appeared in FanGraphs since 2023
+        try:
+            from pybaseball import pitching_stats
+            recent = set()
+            for yr in [2023, 2024, 2025]:
+                try:
+                    df_fg = pitching_stats(yr, qual=0)
+                    if df_fg is not None and not df_fg.empty:
+                        id_cols = [c for c in ["IDfg", "idfg", "playerid"] if c in df_fg.columns]
+                        if id_cols:
+                            recent.update(pd.to_numeric(df_fg[id_cols[0]], errors="coerce").dropna().astype(int).tolist())
+                except Exception:
+                    pass
+            if recent:
+                fg_ids = pd.to_numeric(reg["key_fangraphs"], errors="coerce")
+                reg = reg[fg_ids.isin(recent)].copy()
+        except Exception:
+            pass
+
         reg = reg.sort_values(["display"]).reset_index(drop=True)
         return reg[["display", "display_norm", "key_mlbam", "key_fangraphs"]]
 
