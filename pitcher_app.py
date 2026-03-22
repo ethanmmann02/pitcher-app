@@ -615,7 +615,7 @@ def compute_league_pitchtype_baselines(
     def rate_block(g: pd.DataFrame) -> dict[str, float]:
         pitches = len(g)
         if pitches <= 0:
-            return {"CalledStr%": np.nan, "SwStr%": np.nan, "CSW%": np.nan, "Chase%": np.nan, "Z-Miss%": np.nan, "xwOBA": np.nan}
+            return {"CalledStr%": np.nan, "SwStr%": np.nan, "CSW%": np.nan, "Chase%": np.nan, "ZWhiff%": np.nan, "xwOBA": np.nan}
 
         called = (g["is_called_strike"].sum() / pitches) * 100.0
         csw = ((g["is_called_strike"].sum() + g["is_swinging_strike"].sum()) / pitches) * 100.0
@@ -639,7 +639,7 @@ def compute_league_pitchtype_baselines(
             "SwStr%": float(whiff_pct) if pd.notna(whiff_pct) else np.nan,
             "CSW%": float(csw) if pd.notna(csw) else np.nan,
             "Chase%": float(chase_pct) if pd.notna(chase_pct) else np.nan,
-            "Z-Miss%": float(z_miss_pct) if pd.notna(z_miss_pct) else np.nan,
+            "ZWhiff%": float(z_miss_pct) if pd.notna(z_miss_pct) else np.nan,
             "xwOBA": float(xwoba) if xwoba is not None else np.nan,
         }
 
@@ -657,7 +657,7 @@ def compute_league_pitchtype_baselines(
     all_stats["SwStr%"] = (rates_all["SwStr%"], 10.0)
     all_stats["CSW%"] = (rates_all["CSW%"], 7.5)
     all_stats["Chase%"] = (rates_all["Chase%"], 10.0)
-    all_stats["Z-Miss%"] = (rates_all["Z-Miss%"], 10.0)
+    all_stats["ZWhiff%"] = (rates_all["ZWhiff%"], 10.0)
     all_stats["xwOBA"] = (rates_all["xwOBA"], 0.030)
     all_stats["Stuff+"] = (100.0, 10.0)
     baselines["_ALL_"] = all_stats
@@ -678,7 +678,7 @@ def compute_league_pitchtype_baselines(
         stats["SwStr%"] = (rates["SwStr%"], 10.0)
         stats["CSW%"] = (rates["CSW%"], 7.5)
         stats["Chase%"] = (rates["Chase%"], 10.0)
-        stats["Z-Miss%"] = (rates["Z-Miss%"], 10.0)
+        stats["ZWhiff%"] = (rates["ZWhiff%"], 10.0)
         stats["xwOBA"] = (rates["xwOBA"], 0.030)
         stats["Stuff+"] = (100.0, 10.0)
 
@@ -1212,7 +1212,7 @@ def compute_pitch_metrics(sc: pd.DataFrame) -> pd.DataFrame:
             "CSW%": round(float(csw), 1) if pd.notna(csw) else np.nan,
             "Chase%": round(float(chase_pct), 1) if pd.notna(chase_pct) else np.nan,
             "Zone%": round(float(zone_pct), 1) if pd.notna(zone_pct) else np.nan,
-            "Z-Miss%": round(float(z_miss_pct), 1) if pd.notna(z_miss_pct) else np.nan,
+            "ZWhiff%": round(float(z_miss_pct), 1) if pd.notna(z_miss_pct) else np.nan,
             "xwOBA": round(float(xwoba), 3) if xwoba is not None else np.nan,
             "vRel": round(float(vrel), 1) if pd.notna(vrel) else np.nan,
             "hRel": round(float(hrel), 1) if pd.notna(hrel) else np.nan,
@@ -1236,7 +1236,7 @@ def compute_pitch_metrics(sc: pd.DataFrame) -> pd.DataFrame:
     order = [
         "Pitch", "Pitch%", "Pitches",
         "Velo", "iVB", "HB", "Spin", "vRel", "hRel", "Ext",
-        "CalledStr%", "SwStr%", "CSW%", "Chase%", "Z-Miss%",
+        "CalledStr%", "SwStr%", "CSW%", "Chase%", "ZWhiff%",
         "xwOBA", "Stuff+",
     ]
     out = out[[c for c in order if c in out.columns]]
@@ -1250,7 +1250,7 @@ def apply_all_row_mask(pm: pd.DataFrame) -> pd.DataFrame:
     allowed = {
         "Pitch", "Pitches",
         "Ext",
-        "CalledStr%", "SwStr%", "CSW%", "Chase%", "Z-Miss%",
+        "CalledStr%", "SwStr%", "CSW%", "Chase%", "ZWhiff%",
         "xwOBA",
         "Stuff+",
     }
@@ -1869,7 +1869,7 @@ def main():
                 "Zone%": "{:.1f}",
                 "CSW%": "{:.1f}",
                 "Chase%": "{:.1f}",
-                "Z-Miss%": "{:.1f}",
+                "ZWhiff%": "{:.1f}",
                 "xwOBA": "{:.3f}",
                 "VAA": "{:.1f}",
                 "HAA": "{:.1f}",
@@ -1890,7 +1890,7 @@ def main():
                             "SwStr%": "high_good",
                             "CSW%": "high_good",
                             "Chase%": "low_good",
-                            "Z-Miss%": "high_good",
+                            "ZWhiff%": "high_good",
                             "xwOBA": "low_good",
                         },
                         fmt_map=fmt_map,
