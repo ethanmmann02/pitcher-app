@@ -1834,10 +1834,39 @@ def main():
     # -----------------------------------------------------
     # Header + season summary
     # -----------------------------------------------------
+    # Team logo + headshot
+    TEAM_IDS = {
+        "ARI":109,"ATL":144,"BAL":110,"BOS":111,"CHC":112,"CWS":145,"CIN":113,
+        "CLE":114,"COL":115,"DET":116,"HOU":117,"KC":118,"LAA":108,"LAD":119,
+        "MIA":146,"MIL":158,"MIN":142,"NYM":121,"NYY":147,"OAK":133,"PHI":143,
+        "PIT":134,"SD":135,"SEA":136,"SF":137,"STL":138,"TB":139,"TEX":140,
+        "TOR":141,"WSH":120,
+    }
+
+    pitcher_team = None
+    if not sc.empty and "home_team" in sc.columns and "away_team" in sc.columns and "inning_topbot" in sc.columns:
+        tb = sc["inning_topbot"].fillna("").astype(str).mode()
+        tb = tb.iloc[0] if not tb.empty else ""
+        if tb.lower().startswith("top"):
+            pitcher_team = sc["home_team"].dropna().astype(str).mode().iloc[0] if not sc["home_team"].dropna().empty else None
+        else:
+            pitcher_team = sc["away_team"].dropna().astype(str).mode().iloc[0] if not sc["away_team"].dropna().empty else None
+
+    headshot_url = f"https://content.mlb.com/images/headshots/current/60x60/{mlbam_id}@2x.jpg"
+    team_id = TEAM_IDS.get(pitcher_team) if pitcher_team else None
+    logo_url = f"https://www.mlbstatic.com/team-logos/{team_id}.svg" if team_id else None
+
     top_left, top_right = st.columns([2.2, 1])
 
     with top_left:
-        st.subheader(display_name.upper())
+        name_cols = st.columns([0.13, 0.6, 0.13, 1.0])
+        with name_cols[0]:
+            st.image(headshot_url, width=60)
+        with name_cols[1]:
+            st.subheader(display_name.upper())
+        if logo_url:
+            with name_cols[2]:
+                st.image(logo_url, width=45)
         st.caption(f"{start_str} → {end_str}   ·   game_types={','.join(sorted(list(allowed_gt)))}   ·   app={APP_VERSION}")
 
         st.markdown("### SEASON SUMMARY")
