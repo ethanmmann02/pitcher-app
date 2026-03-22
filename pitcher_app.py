@@ -1889,7 +1889,7 @@ def main():
                             "CalledStr%": "high_good",
                             "SwStr%": "high_good",
                             "CSW%": "high_good",
-                            "Chase%": "low_good",
+                            "Chase%": "high_good",
                             "ZWhiff%": "high_good",
                             "xwOBA": "low_good",
                         },
