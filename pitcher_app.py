@@ -428,6 +428,17 @@ def resolve_name_from_mlbam(pitcher_df: pd.DataFrame, mlbam_id: int) -> str:
     hit = pitcher_df.loc[pitcher_df["key_mlbam"].astype("Int64") == int(mlbam_id)]
     if not hit.empty:
         return str(hit.iloc[0]["display"])
+    # Fall back to MLB Stats API for players not in Chadwick
+    try:
+        import requests
+        r = requests.get(f"https://statsapi.mlb.com/api/v1/people/{mlbam_id}", timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            people = data.get("people", [])
+            if people:
+                return people[0].get("fullName", f"MLBAM {mlbam_id}")
+    except Exception:
+        pass
     return f"MLBAM {mlbam_id}"
 
 def resolve_fg_from_mlbam(pitcher_df: pd.DataFrame, mlbam_id: int) -> Optional[int]:
