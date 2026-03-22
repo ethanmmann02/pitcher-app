@@ -395,19 +395,27 @@ def load_pitcher_dropdown() -> pd.DataFrame:
         # Filter to only pitchers who appeared in FanGraphs since 2023
         try:
             from pybaseball import pitching_stats
-            recent = set()
+            recent_ids = set()
+            recent_names = set()
             for yr in [2023, 2024, 2025]:
                 try:
                     df_fg = pitching_stats(yr, qual=0)
                     if df_fg is not None and not df_fg.empty:
                         id_cols = [c for c in ["IDfg", "idfg", "playerid"] if c in df_fg.columns]
                         if id_cols:
-                            recent.update(pd.to_numeric(df_fg[id_cols[0]], errors="coerce").dropna().astype(int).tolist())
+                            recent_ids.update(pd.to_numeric(df_fg[id_cols[0]], errors="coerce").dropna().astype(int).tolist())
+                        if "Name" in df_fg.columns:
+                            recent_names.update(df_fg["Name"].str.lower().str.strip().tolist())
+                            # Also store last names for partial matching
+                            recent_names.update(df_fg["Name"].str.lower().str.strip().str.split().str[-1].tolist())
                 except Exception:
                     pass
-            if recent:
+            if recent_ids:
                 fg_ids = pd.to_numeric(reg["key_fangraphs"], errors="coerce")
-                reg = reg[fg_ids.isin(recent)].copy()
+                # Keep by FanGraphs ID match OR by name match (catches broken -1 links)
+                last_names = reg["display"].str.lower().str.strip().str.split().str[-1]
+                name_match = reg["display"].str.lower().str.strip().isin(recent_names) | last_names.isin(recent_names)
+                reg = reg[fg_ids.isin(recent_ids) | name_match].copy()
         except Exception:
             pass
 
