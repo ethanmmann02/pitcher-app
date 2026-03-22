@@ -1451,7 +1451,16 @@ def plot_heatmap_contour(sc: pd.DataFrame, hand: str, pitch_group: str, mode: st
     df = df[(df["stand"] == hand) & (df["pitch_group"] == pitch_group)]
     df = valid_pitch_rows(df)
     if df.empty:
-        st.info(f"No heatmap data for {pitch_group} vs {hand}HH.")
+        fig, ax = plt.subplots(figsize=(3.6, 3.6))
+        add_strikezone(ax)
+        add_batter_illustration(ax, hand)
+        ax.set_title(f"{pitch_group} vs {hand}HH — {mode}", fontsize=10)
+        ax.set_xlabel("Catcher POV")
+        ax.set_ylabel("Plate Height")
+        ax.set_xlim(-2.5, 2.5)
+        ax.set_ylim(-1.0, 5.0)
+        ax.text(0, 2.0, "No data", ha="center", va="center", fontsize=11, color="#aaaaaa")
+        st.pyplot(fig, clear_figure=True)
         return
 
     weights = None
