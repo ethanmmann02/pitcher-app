@@ -1854,6 +1854,69 @@ def main():
     st.divider()
 
     # -----------------------------------------------------
+    # PLATOON SPLITS
+    # -----------------------------------------------------
+    st.markdown("#### Platoon Splits")
+
+    def compute_platoon_splits(sc, hand):
+        df = sc[sc["stand"] == hand].copy() if "stand" in sc.columns else pd.DataFrame()
+        if df.empty:
+            return None
+        pa_end = _pa_end_rows(df)
+        evs = pa_end["events"].fillna("").astype(str) if not pa_end.empty and "events" in pa_end.columns else pd.Series(dtype=str)
+        h = int(evs.isin(["single","double","triple","home_run"]).sum())
+        hr = int((evs == "home_run").sum())
+        so = int(evs.isin(["strikeout","strikeout_double_play"]).sum())
+        bb = int(evs.isin(["walk","intent_walk"]).sum())
+        hbp = int((evs == "hit_by_pitch").sum())
+        non_ab = {"walk","intent_walk","hit_by_pitch","sac_fly","sac_bunt","catcher_interf"}
+        ab = int((~evs.isin(list(non_ab)) & evs.ne("")).sum())
+        pa = ab + bb + hbp
+        avg = h/ab if ab > 0 else None
+        obp = (h+bb+hbp)/pa if pa > 0 else None
+        doubles = int((evs == "double").sum())
+        triples = int((evs == "triple").sum())
+        tb = h - hr - doubles - triples + 2*doubles + 3*triples + 4*hr
+        slg = tb/ab if ab > 0 else None
+        ops = (obp or 0) + (slg or 0) if obp is not None and slg is not None else None
+        k_pct = so/pa*100 if pa > 0 else None
+        bb_pct = bb/pa*100 if pa > 0 else None
+        ev = float(safe_num(df["launch_speed"]).dropna().mean()) if "launch_speed" in df.columns else None
+        xwoba = xwoba_savant_like(df)
+        return {
+            "Split": f"vs {hand}HH",
+            "PA": pa,
+            "K%": round(k_pct, 1) if k_pct is not None else np.nan,
+            "BB%": round(bb_pct, 1) if bb_pct is not None else np.nan,
+            "AVG": round(avg, 3) if avg is not None else np.nan,
+            "OBP": round(obp, 3) if obp is not None else np.nan,
+            "SLG": round(slg, 3) if slg is not None else np.nan,
+            "OPS": round(ops, 3) if ops is not None else np.nan,
+            "EV": round(ev, 1) if ev is not None else np.nan,
+            "xwOBA": round(xwoba, 3) if xwoba is not None else np.nan,
+        }
+
+    splits_L = compute_platoon_splits(sc, "L")
+    splits_R = compute_platoon_splits(sc, "R")
+    splits_rows = [s for s in [splits_L, splits_R] if s is not None]
+    if splits_rows:
+        splits_df = pd.DataFrame(splits_rows)
+        splits_fmt = {
+            "PA": "{:.0f}",
+            "K%": "{:.1f}",
+            "BB%": "{:.1f}",
+            "AVG": "{:.3f}",
+            "OBP": "{:.3f}",
+            "SLG": "{:.3f}",
+            "OPS": "{:.3f}",
+            "EV": "{:.1f}",
+            "xwOBA": "{:.3f}",
+        }
+        st.dataframe(splits_df.style.format(splits_fmt, na_rep="—"), use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # -----------------------------------------------------
     # Movement + Pitch Metrics
     # -----------------------------------------------------
     st.markdown("## PITCH MOVEMENT + METRICS")
@@ -2009,6 +2072,65 @@ def main():
         st.markdown("### vs RHH")
         for grp in PITCH_GROUP_ORDER:
             plot_heatmap_contour(sc, "R", grp, heat_mode)
+
+    # -----------------------------------------------------
+    # PLATOON SPLITS
+    # -----------------------------------------------------
+    st.markdown("#### Platoon Splits")
+
+    def compute_platoon_splits(sc, hand):
+        df = sc[sc["stand"] == hand].copy() if "stand" in sc.columns else pd.DataFrame()
+        if df.empty:
+            return None
+        pa_end = _pa_end_rows(df)
+        evs = pa_end["events"].fillna("").astype(str) if not pa_end.empty and "events" in pa_end.columns else pd.Series(dtype=str)
+
+        h = int(evs.isin(["single","double","triple","home_run"]).sum())
+        hr = int((evs == "home_run").sum())
+        so = int(evs.isin(["strikeout","strikeout_double_play"]).sum())
+        bb = int(evs.isin(["walk","intent_walk"]).sum())
+        hbp = int((evs == "hit_by_pitch").sum())
+        non_ab = {"walk","intent_walk","hit_by_pitch","sac_fly","sac_bunt","catcher_interf"}
+        ab = int((~evs.isin(list(non_ab)) & evs.ne("")).sum())
+        pa = ab + bb + hbp
+
+        avg = h/ab if ab > 0 else None
+        obp = (h+bb+hbp)/pa if pa > 0 else None
+        doubles = int((evs == "double").sum())
+        triples = int((evs == "triple").sum())
+        tb = h - hr - doubles - triples + 2*doubles + 3*triples + 4*hr
+        slg = tb/ab if ab > 0 else None
+        ops = (obp or 0) + (slg or 0) if obp is not None and slg is not None else None
+        k_pct = so/pa*100 if pa > 0 else None
+        bb_pct = bb/pa*100 if pa > 0 else None
+        ev = float(safe_num(df["launch_speed"]).dropna().mean()) if "launch_speed" in df.columns else None
+        xwoba = xwoba_savant_like(df)
+
+        return {
+            "PA": str(pa),
+            "K%": f"{k_pct:.1f}%" if k_pct is not None else "—",
+            "BB%": f"{bb_pct:.1f}%" if bb_pct is not None else "—",
+            "AVG": f"{avg:.3f}" if avg is not None else "—",
+            "OBP": f"{obp:.3f}" if obp is not None else "—",
+            "SLG": f"{slg:.3f}" if slg is not None else "—",
+            "OPS": f"{ops:.3f}" if ops is not None else "—",
+            "EV": f"{ev:.1f}" if ev is not None else "—",
+            "xwOBA": f"{xwoba:.3f}" if xwoba is not None else "—",
+        }
+
+    splits_L = compute_platoon_splits(sc, "L")
+    splits_R = compute_platoon_splits(sc, "R")
+
+    metrics = ["PA","K%","BB%","AVG","OBP","SLG","OPS","EV","xwOBA"]
+
+    for hand, splits in [("vs LHH", splits_L), ("vs RHH", splits_R)]:
+        if splits:
+            cols = st.columns(len(metrics))
+            cols[0].markdown(f"**{hand}**")
+            for i, m in enumerate(metrics):
+                cols[i].metric(m, splits.get(m, "—"))
+        else:
+            st.caption(f"No {hand} data.")
 
     st.divider()
 
