@@ -1647,6 +1647,8 @@ def main():
 
     pitcher_df = load_pitcher_dropdown()
 
+    usage_cols = {"pitch_usage": "Usage%"}
+
     with st.sidebar:
         st.header("Controls")
 
@@ -1728,11 +1730,13 @@ def main():
 
         st.divider()
         trend_keys = list(TREND_LABELS.keys())
+        all_trend_options = trend_keys + list(usage_cols.keys())
+        all_trend_labels = {**TREND_LABELS, **usage_cols}
         trend_vars = st.multiselect(
             "Trend metrics",
-            options=trend_keys,
+            options=all_trend_options,
             default=["release_speed"],
-            format_func=lambda k: TREND_LABELS.get(k, k),
+            format_func=lambda k: all_trend_labels.get(k, k),
         )
         normalize = st.checkbox("Normalize (if multi)", value=True)
 
@@ -1828,6 +1832,21 @@ def main():
     # -----------------------------------------------------
     # Pitch metrics (fixed totals)
     # -----------------------------------------------------
+    # Compute per-pitch-type usage% per game and add to sc
+    usage_cols = {}
+    if "pitch_type" in sc.columns and "game_pk" in sc.columns:
+        valid_sc = valid_pitch_rows(sc)
+        pitch_types_for_usage = sorted(valid_sc["pitch_type"].dropna().astype(str).unique().tolist())
+        game_totals = valid_sc.groupby("game_pk")["pitch_type"].count().rename("total")
+        for pt in pitch_types_for_usage:
+            col = f"usage_{pt}"
+            pt_counts = valid_sc[valid_sc["pitch_type"] == pt].groupby("game_pk")["pitch_type"].count().rename(col)
+            usage_df = pt_counts.div(game_totals).multiply(100).reset_index()
+            usage_df.columns = ["game_pk", col]
+            sc = sc.merge(usage_df, on="game_pk", how="left")
+            usage_cols[col] = f"{PITCH_NAMES.get(pt, pt)} Usage%"
+        _ss_set("usage_cols", usage_cols)
+
     pitch_metrics = compute_pitch_metrics(sc)
     pitch_metrics_disp = apply_all_row_mask(pitch_metrics)
 
@@ -2169,6 +2188,44 @@ def main():
     if not trend_vars:
         st.info("Select at least one trend metric in the sidebar.")
         return
+
+    # Handle pitch_usage specially - always show all pitches as colored lines
+    if "pitch_usage" in trend_vars:
+        if "pitch_type" in sc.columns and "game_pk" in sc.columns and "game_date" in sc.columns:
+            valid_sc = valid_pitch_rows(sc)
+            pitch_types_present = sorted(valid_sc["pitch_type"].dropna().astype(str).unique().tolist())
+            game_totals = valid_sc.groupby(["game_pk","game_date"])["pitch_type"].count().rename("total").reset_index()
+            fig = go.Figure()
+            for ptype in pitch_types_present:
+                pt_counts = valid_sc[valid_sc["pitch_type"]==ptype].groupby(["game_pk","game_date"])["pitch_type"].count().rename("count").reset_index()
+                merged = pt_counts.merge(game_totals, on=["game_pk","game_date"])
+                merged["usage"] = merged["count"] / merged["total"] * 100
+                merged = merged.sort_values("game_date")
+                color = PITCH_COLORS.get(ptype, "#9e9e9e")
+                label = PITCH_NAMES.get(ptype, ptype)
+                hover = "Date: " + pd.to_datetime(merged["game_date"]).dt.strftime("%Y-%m-%d").astype(str) + "<br>" + label + ": " + merged["usage"].round(1).astype(str) + "%"
+                fig.add_trace(go.Scatter(
+                    x=pd.to_datetime(merged["game_date"]),
+                    y=merged["usage"],
+                    mode="lines+markers",
+                    name=label,
+                    line=dict(color=color),
+                    hovertext=hover,
+                    hoverinfo="text",
+                ))
+            fig.update_layout(
+                height=420,
+                margin=dict(l=40, r=20, t=40, b=40),
+                xaxis=dict(title="Date", tickformat="%b %d", showgrid=True, tickangle=-25),
+                yaxis=dict(title="Usage%", showgrid=True),
+                legend=dict(orientation="v", x=1.02, y=1.0),
+                hovermode="x unified",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        remaining = [v for v in trend_vars if v != "pitch_usage"]
+        if not remaining:
+            return
+        trend_vars = remaining
 
     if trend_pitch == "(All)" and "pitch_type" in sc.columns:
         pitch_types_present = sorted(valid_pitch_rows(sc)["pitch_type"].dropna().astype(str).unique().tolist())
