@@ -1051,10 +1051,12 @@ def style_red_green(
         sty = sty.apply(apply_col, subset=[c])
 
     if pitch_col and pitch_col in tmp.columns:
+        name_to_abbrev = {v: k for k, v in PITCH_NAMES.items()}
         def pitch_chip(s: pd.Series):
             out = []
             for v in s.astype(str).tolist():
-                c = PITCH_COLORS.get(v, "#9e9e9e")
+                abbrev = name_to_abbrev.get(v, v)
+                c = PITCH_COLORS.get(abbrev, PITCH_COLORS.get(v, "#9e9e9e"))
                 out.append(f"background-color: {c}; color: white; font-weight: 800;")
             return out
         sty = sty.apply(pitch_chip, subset=[pitch_col])
@@ -1222,7 +1224,7 @@ def compute_pitch_metrics(sc: pd.DataFrame) -> pd.DataFrame:
     for ptype, g in df.groupby("pitch_type", dropna=True):
         pitches = len(g)
         pitch_pct = (pitches / total_pitches * 100.0) if total_pitches else np.nan
-        r = {"Pitch": str(ptype), "Pitch%": round(pitch_pct, 1) if pd.notna(pitch_pct) else np.nan}
+        r = {"Pitch": PITCH_NAMES.get(str(ptype), str(ptype)), "Pitch%": round(pitch_pct, 1) if pd.notna(pitch_pct) else np.nan}
         r.update(one_block(g))
         rows.append(r)
 
