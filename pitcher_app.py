@@ -1852,7 +1852,7 @@ def main():
         else:
             pitcher_team = sc["away_team"].dropna().astype(str).mode().iloc[0] if not sc["away_team"].dropna().empty else None
 
-    headshot_url = f"https://content.mlb.com/images/headshots/current/60x60/{mlbam_id}@2x.jpg"
+    headshot_url = f"https://midfield.mlbstatic.com/v1/people/{mlbam_id}/spots/spot"
     team_id = TEAM_IDS.get(pitcher_team) if pitcher_team else None
     logo_url = f"https://www.mlbstatic.com/team-logos/{team_id}.svg" if team_id else None
 
