@@ -1386,39 +1386,48 @@ def add_strikezone(ax):
     ax.add_patch(rect)
 
 def add_batter_illustration(ax, hand: str):
+    # For catcher POV: LHH stands on right side, RHH on left side
     side = 1.0 if hand == "L" else -1.0
-    x0 = 1.55 * side
-    y0 = 0.95
+    x0 = 1.6 * side
+    y0 = 1.0
+    alpha = 0.6
+    lw = 2.0
+    color = "#444444"
 
-    ax.add_patch(Circle((x0, y0 + 1.65), 0.16, fill=False, linewidth=2.0, alpha=0.55))
+    # Head
+    ax.add_patch(Circle((x0, y0 + 1.72), 0.17, fill=False, linewidth=lw, alpha=alpha, color=color))
 
-    torso = FancyBboxPatch(
-        (x0 - 0.12, y0 + 0.85),
-        0.24, 0.65,
-        boxstyle="round,pad=0.02,rounding_size=0.06",
-        fill=False,
-        linewidth=2.0,
-        alpha=0.55,
-    )
-    ax.add_patch(torso)
+    # Neck
+    ax.plot([x0, x0], [y0 + 1.55, y0 + 1.45], linewidth=lw, alpha=alpha, color=color)
 
-    hips = FancyBboxPatch(
-        (x0 - 0.14, y0 + 0.58),
-        0.28, 0.22,
-        boxstyle="round,pad=0.02,rounding_size=0.08",
-        fill=False,
-        linewidth=2.0,
-        alpha=0.55,
-    )
-    ax.add_patch(hips)
+    # Torso - slightly angled toward plate
+    torso_top = (x0, y0 + 1.45)
+    torso_bot = (x0 - 0.08 * side, y0 + 0.85)
+    ax.plot([torso_top[0], torso_bot[0]], [torso_top[1], torso_bot[1]], linewidth=3.0, alpha=alpha, color=color)
 
-    ax.plot([x0 - 0.05, x0 - 0.14], [y0 + 0.58, y0 + 0.10], linewidth=2.0, alpha=0.55)
-    ax.plot([x0 + 0.05, x0 + 0.12], [y0 + 0.58, y0 + 0.10], linewidth=2.0, alpha=0.55)
+    # Hips
+    hip_l = (torso_bot[0] - 0.15, y0 + 0.82)
+    hip_r = (torso_bot[0] + 0.15, y0 + 0.82)
+    ax.plot([hip_l[0], hip_r[0]], [hip_l[1], hip_r[1]], linewidth=2.5, alpha=alpha, color=color)
 
-    ax.plot([x0 + 0.10*side, x0 + 0.30*side], [y0 + 1.25, y0 + 1.18], linewidth=2.0, alpha=0.55)
-    ax.plot([x0 + 0.30*side, x0 + 0.45*side], [y0 + 1.18, y0 + 1.25], linewidth=2.0, alpha=0.55)
+    # Front leg (toward plate)
+    ax.plot([torso_bot[0] - 0.08*side, torso_bot[0] - 0.12*side], [y0 + 0.82, y0 + 0.42], linewidth=lw, alpha=alpha, color=color)
+    ax.plot([torso_bot[0] - 0.12*side, torso_bot[0] - 0.10*side], [y0 + 0.42, y0 + 0.0], linewidth=lw, alpha=alpha, color=color)
 
-    ax.plot([x0 + 0.45*side, x0 + 0.82*side], [y0 + 1.25, y0 + 1.55], linewidth=3.2, alpha=0.45)
+    # Back leg
+    ax.plot([torso_bot[0] + 0.08*side, torso_bot[0] + 0.15*side], [y0 + 0.82, y0 + 0.42], linewidth=lw, alpha=alpha, color=color)
+    ax.plot([torso_bot[0] + 0.15*side, torso_bot[0] + 0.18*side], [y0 + 0.42, y0 + 0.0], linewidth=lw, alpha=alpha, color=color)
+
+    # Back arm (top hand on bat)
+    ax.plot([torso_top[0], torso_top[0] - 0.15*side], [y0 + 1.30, y0 + 1.50], linewidth=lw, alpha=alpha, color=color)
+
+    # Front arm (bottom hand on bat)  
+    ax.plot([torso_top[0], torso_top[0] - 0.20*side], [y0 + 1.20, y0 + 1.45], linewidth=lw, alpha=alpha, color=color)
+
+    # Bat - held up and back in stance
+    bat_x = torso_top[0] - 0.18*side
+    bat_y = y0 + 1.48
+    ax.plot([bat_x, bat_x - 0.15*side], [bat_y, bat_y + 0.55], linewidth=3.5, alpha=0.7, color=color)
 
 def plot_pitch_break_cloud(sc: pd.DataFrame, compact: bool = True):
     needed = ["HB_in", "iVB_in", "pitch_type"]
@@ -1840,19 +1849,7 @@ def main():
     # Pitch metrics (fixed totals)
     # -----------------------------------------------------
     # Compute per-pitch-type usage% per game and add to sc
-    usage_cols = {}
-    if "pitch_type" in sc.columns and "game_pk" in sc.columns:
-        valid_sc = valid_pitch_rows(sc)
-        pitch_types_for_usage = sorted(valid_sc["pitch_type"].dropna().astype(str).unique().tolist())
-        game_totals = valid_sc.groupby("game_pk")["pitch_type"].count().rename("total")
-        for pt in pitch_types_for_usage:
-            col = f"usage_{pt}"
-            pt_counts = valid_sc[valid_sc["pitch_type"] == pt].groupby("game_pk")["pitch_type"].count().rename(col)
-            usage_df = pt_counts.div(game_totals).multiply(100).reset_index()
-            usage_df.columns = ["game_pk", col]
-            sc = sc.merge(usage_df, on="game_pk", how="left")
-            usage_cols[col] = f"{PITCH_NAMES.get(pt, pt)} Usage%"
-        _ss_set("usage_cols", usage_cols)
+    # usage_cols defined at top of main as {"pitch_usage": "Usage%"}
 
     pitch_metrics = compute_pitch_metrics(sc)
     pitch_metrics_disp = apply_all_row_mask(pitch_metrics)
