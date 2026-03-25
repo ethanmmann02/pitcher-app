@@ -741,6 +741,7 @@ def compute_zone_contact_block(sc: pd.DataFrame) -> dict[str, float | None]:
         "First Pitch Strike%": None,
         "1-1 Strike%": None,
         "AB < 3 Pitches%": None,
+        "R2K%": None,
         "Swing%": None,
 
         "Exit Velo": None,
@@ -789,6 +790,13 @@ def compute_zone_contact_block(sc: pd.DataFrame) -> dict[str, float | None]:
         end_pitch = df.groupby(["game_pk", "at_bat_number"])["pitch_number"].max()
         if len(end_pitch):
             out["AB < 3 Pitches%"] = float((end_pitch <= 2).mean() * 100.0)
+    # R2K%: AB where count reaches 0-2
+    if require_cols(df, ["balls", "strikes", "game_pk", "at_bat_number"]):
+        df_02 = df[(safe_num(df["balls"]) == 0) & (safe_num(df["strikes"]) == 2)]
+        total_abs = df.groupby(["game_pk", "at_bat_number"]).ngroups
+        reached_02 = df_02.groupby(["game_pk", "at_bat_number"]).ngroups
+        if total_abs > 0:
+            out["R2K%"] = float(reached_02 / total_abs * 100.0)
 
     
     # -----------------------------
@@ -2087,23 +2095,23 @@ def main():
     r1[3].metric("AB < 3 Pitches%", f"{z['AB < 3 Pitches%']:.1f}%" if z["AB < 3 Pitches%"] is not None else "—",
                  delta=(f"{_delta(z['AB < 3 Pitches%'], lgz.get('AB < 3 Pitches%')):+.1f}%"
                         if _delta(z["AB < 3 Pitches%"], lgz.get("AB < 3 Pitches%")) is not None else None))
-    r1[4].metric("Swing%", f"{z['Swing%']:.1f}%" if z["Swing%"] is not None else "—",
-                 delta=(f"{_delta(z['Swing%'], lgz.get('Swing%')):+.1f}%"
-                        if _delta(z["Swing%"], lgz.get("Swing%")) is not None else None))
+    r1[4].metric("R2K%", f"{z['R2K%']:.1f}%" if z["R2K%"] is not None else "—",
+                 delta=(f"{_delta(z['R2K%'], lgz.get('R2K%')):+.1f}%"
+                        if _delta(z["R2K%"], lgz.get("R2K%")) is not None else None))
 
     r2 = st.columns(5)
-    r2[0].metric("Exit Velo", f"{z['Exit Velo']:.1f}" if z["Exit Velo"] is not None else "—",
+    r2[0].metric("Swing%", f"{z['Swing%']:.1f}%" if z["Swing%"] is not None else "—",
+                 delta=(f"{_delta(z['Swing%'], lgz.get('Swing%')):+.1f}%"
+                        if _delta(z["Swing%"], lgz.get("Swing%")) is not None else None))
+    r2[1].metric("Exit Velo", f"{z['Exit Velo']:.1f}" if z["Exit Velo"] is not None else "—",
                  delta=(f"{_delta(z['Exit Velo'], lgz.get('Exit Velo')):+.1f}"
                         if _delta(z["Exit Velo"], lgz.get("Exit Velo")) is not None else None))
-    r2[1].metric("Launch Angle", f"{z['Launch Angle']:.1f}" if z["Launch Angle"] is not None else "—",
+    r2[2].metric("Launch Angle", f"{z['Launch Angle']:.1f}" if z["Launch Angle"] is not None else "—",
                  delta=(f"{_delta(z['Launch Angle'], lgz.get('Launch Angle')):+.1f}"
                         if _delta(z["Launch Angle"], lgz.get("Launch Angle")) is not None else None))
-    r2[2].metric("HardHit%", f"{z['HardHit%']:.1f}%" if z["HardHit%"] is not None else "—",
+    r2[3].metric("HardHit%", f"{z['HardHit%']:.1f}%" if z["HardHit%"] is not None else "—",
                  delta=(f"{_delta(z['HardHit%'], lgz.get('HardHit%')):+.1f}%"
                         if _delta(z["HardHit%"], lgz.get("HardHit%")) is not None else None))
-    r2[3].metric("xSLG (contact)", f"{z['xSLG (contact)']:.3f}" if z["xSLG (contact)"] is not None else "—",
-                 delta=(f"{_delta(z['xSLG (contact)'], lgz.get('xSLG (contact)')):+.3f}"
-                        if _delta(z["xSLG (contact)"], lgz.get("xSLG (contact)")) is not None else None))
     r2[4].metric("BABIP", f"{z['BABIP']:.3f}" if z["BABIP"] is not None else "—",
                  delta=(f"{_delta(z['BABIP'], lgz.get('BABIP')):+.3f}"
                         if _delta(z["BABIP"], lgz.get("BABIP")) is not None else None))
@@ -2125,7 +2133,7 @@ def main():
                  delta=(f"{_delta(z['SweetSpot%'], lgz.get('SweetSpot%')):+.1f}%"
                         if _delta(z["SweetSpot%"], lgz.get("SweetSpot%")) is not None else None))
 
-    st.caption("AB < 3 Pitches% = share of plate appearances that end in 1–2 pitches.")
+    st.caption("AB < 3 Pitches% = share of plate appearances that end in 1–2 pitches. R2K% = % of AB where count reaches 0-2.")
     st.divider()
 
     # -----------------------------------------------------
