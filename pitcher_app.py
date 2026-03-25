@@ -1748,18 +1748,6 @@ def main():
         include_statcast_xwoba = st.checkbox("Include xwOBA in Season Summary (Statcast)", value=True)
 
         st.divider()
-        trend_keys = list(TREND_LABELS.keys())
-        all_trend_options = trend_keys + list(usage_cols.keys())
-        all_trend_labels = {**TREND_LABELS, **usage_cols}
-        trend_vars = st.multiselect(
-            "Trend metrics",
-            options=all_trend_options,
-            default=["release_speed"],
-            format_func=lambda k: all_trend_labels.get(k, k),
-        )
-        normalize = st.checkbox("Normalize (if multi)", value=True)
-
-        st.divider()
         run_btn = st.button("Run / Refresh Data", type="primary")
 
     if start_date > end_date:
@@ -1935,8 +1923,8 @@ def main():
     with top_right:
         st.markdown("### QUICK TOTALS")
         c1, c2 = st.columns(2)
-        c1.metric("Pitches (valid)", f"{len(valid_pitch_rows(sc)):,}")
-        c2.metric("Games (range)", f"{sc['game_date'].nunique():,}" if "game_date" in sc.columns else "—")
+        c1.metric("Pitches", f"{len(valid_pitch_rows(sc)):,}")
+        c2.metric("Games", f"{sc['game_date'].nunique():,}" if "game_date" in sc.columns else "—")
 
     st.divider()
 
@@ -2197,15 +2185,30 @@ def main():
     st.markdown("## TRENDS")
 
     pitch_types = sorted(valid_pitch_rows(sc)["pitch_type"].dropna().astype(str).unique().tolist()) if "pitch_type" in sc.columns else []
-    trend_pitch = st.selectbox(
-        "Trend pitch filter (does NOT refetch data)",
-        options=["(All)"] + pitch_types,
-        index=0,
-        key="trend_pitch_filter_live",
-    )
+    trend_keys = list(TREND_LABELS.keys())
+    all_trend_options = trend_keys + list(usage_cols.keys())
+    all_trend_labels = {**TREND_LABELS, **usage_cols}
+
+    tc1, tc2 = st.columns(2)
+    with tc1:
+        trend_pitch = st.selectbox(
+            "Pitch filter (does NOT refetch data)",
+            options=["(All)"] + pitch_types,
+            index=0,
+            key="trend_pitch_filter_live",
+        )
+    with tc2:
+        trend_var_key = st.selectbox(
+            "Metric",
+            options=all_trend_options,
+            index=0,
+            format_func=lambda k: all_trend_labels.get(k, k),
+            key="trend_metric_live",
+        )
+    trend_vars = [trend_var_key]
 
     if not trend_vars:
-        st.info("Select at least one trend metric in the sidebar.")
+        st.info("Select a trend metric above.")
         return
 
     # Handle pitch_usage specially - always show all pitches as colored lines
@@ -2274,7 +2277,7 @@ def main():
             height=420,
             margin=dict(l=40, r=20, t=40, b=40),
             xaxis=dict(title="Date", tickformat="%b %d", showgrid=True, tickangle=-25),
-            yaxis=dict(title="Value", showgrid=True),
+            yaxis=dict(title=all_trend_labels.get(trend_vars[0], trend_vars[0]) if trend_vars else "Value", showgrid=True),
             legend=dict(orientation="v", x=1.02, y=1.0),
             hovermode="x unified",
         )
