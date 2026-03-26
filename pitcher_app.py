@@ -1688,6 +1688,15 @@ def main():
 
     usage_cols = {"pitch_usage": "Usage%"}
 
+    # Handle leaderboard jump
+    if _ss_get("lb_jump_mlbam"):
+        jumped_id = _ss_get("lb_jump_mlbam")
+        jumped_name = _ss_get("lb_jump_name", "")
+        _ss_set("lb_jump_mlbam", None)
+        _ss_set("lb_jump_name", None)
+        st.query_params["mlbam"] = str(jumped_id)
+        st.info(f"Loading {jumped_name} — enter MLBAM ID {jumped_id} in the Manual MLBAM ID field and click Run / Refresh Data.")
+
     with st.sidebar:
         st.header("Controls")
 
@@ -1867,10 +1876,13 @@ def main():
                 st.dataframe(lb_df[show_cols], use_container_width=True, hide_index=True)
 
                 st.markdown("---")
-                sel = st.selectbox("Load pitcher into Dashboard", lb_df["Pitcher"].tolist(), key="lb_sel")
-                if st.button("View in Dashboard →", key="lb_view"):
+                st.caption("Select a pitcher to load into the Dashboard:")
+                sel = st.selectbox("Pitcher", lb_df["Pitcher"].tolist(), key="lb_sel", label_visibility="collapsed")
+                if st.button("→ Load into Dashboard", key="lb_view", type="primary"):
                     mlbam_sel = int(lb_df[lb_df["Pitcher"]==sel]["MLBAM"].iloc[0])
-                    st.info(f"Enter MLBAM ID **{mlbam_sel}** in the Manual MLBAM ID field in the sidebar, then click Run / Refresh Data.")
+                    _ss_set("lb_jump_mlbam", mlbam_sel)
+                    _ss_set("lb_jump_name", sel)
+                    st.rerun()
             else:
                 st.info("No pitchers met the minimum pitch threshold.")
         else:
