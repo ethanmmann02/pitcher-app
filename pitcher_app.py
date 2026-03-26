@@ -1777,7 +1777,7 @@ def main():
         st.markdown("## Pitcher Leaderboard")
         lb_c1, lb_c2 = st.columns(2)
         with lb_c1:
-            lb_start = st.date_input("Start date", value=dt.date(dt.date.today().year, 3, 1), key="lb_start")
+            lb_start = st.date_input("Start date", value=dt.date(dt.date.today().year, 3, 25), key="lb_start")
         with lb_c2:
             lb_end = st.date_input("End date", value=dt.date.today(), key="lb_end")
 
