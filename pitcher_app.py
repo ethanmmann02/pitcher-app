@@ -883,9 +883,9 @@ def compute_zone_contact_block(sc: pd.DataFrame) -> dict[str, float | None]:
         bip = bt[bt.isin(["ground_ball", "line_drive", "fly_ball", "popup"])]
         denom = len(bip)
         if denom > 0:
-            out["GB%"] = float((bip == "ground_ball").mean() * 100.0)
-            out["LD%"] = float((bip == "line_drive").mean() * 100.0)
-            out["FB%"] = float((bip == "fly_ball").mean() * 100.0)
+            out["GB%"] = float((bip == "ground_ball").sum() / denom * 100.0)
+            out["LD%"] = float((bip == "line_drive").sum() / denom * 100.0)
+            out["FB%"] = float((bip == "fly_ball").sum() / denom * 100.0)
 
             if "events" in df.columns:
                 hr = int(((df["events"].fillna("").astype(str) == "home_run") & (df.get("bb_type", "") == "fly_ball")).sum())
