@@ -803,7 +803,9 @@ def compute_zone_contact_block(sc: pd.DataFrame) -> dict[str, float | None]:
     # Batted-ball event (BBE) block
     # -----------------------------
     bbe = df.copy()
-    # Statcast populates launch_speed / launch_angle on batted-ball events.
+    # Only use true batted ball events (bb_type not null) for EV/LA/Barrel
+    if "bb_type" in bbe.columns:
+        bbe = bbe.loc[bbe["bb_type"].notna()].copy()
     if "launch_speed" in bbe.columns:
         bbe = bbe.loc[bbe["launch_speed"].notna()].copy()
     if "launch_angle" in bbe.columns:
@@ -1753,11 +1755,7 @@ def main():
             f"Compare pitch metrics to league (min {MIN_BASELINE_PITCHES} pitches / pitch type)",
             value=True,
         )
-        baseline_days = st.slider(
-            "League baseline window (days, for comparisons)",
-            min_value=7, max_value=90, value=30, step=1,
-            help="Used for pitch-type shading + Zone/Contact deltas + default Stuff+ training window."
-        )
+        baseline_days = 30  # kept for compatibility but not shown
 
         st.divider()
 
@@ -1771,528 +1769,635 @@ def main():
         st.error("Start date must be on or before end date.")
         return
 
-    start_str = start_date.strftime("%Y-%m-%d")
-    end_str = end_date.strftime("%Y-%m-%d")
-    current_year = int(end_date.year)
 
-    params = (
-        APP_VERSION, mlbam_id, fg_id, display_name, start_str, end_str,
-        heat_mode, league_compare, baseline_days, include_statcast_xwoba,
-        include_st, include_post
-    )
+    tab_dashboard, tab_leaderboard = st.tabs(["📊 Dashboard", "🏆 Leaderboard"])
 
-    if run_btn or _ss_get("loaded_params") != params:
-        # --- Pitcher pull ---
-        with st.spinner("Fetching Statcast pitcher data..."):
-            try:
-                sc_raw = fetch_statcast_pitcher(mlbam_id, start_str, end_str, allowed_gt=allowed_gt)
-            except _REQ_EXC:
-                st.error("Statcast pitcher pull timed out. Try a smaller date range and rerun.")
+    with tab_leaderboard:
+        st.markdown("## Pitcher Leaderboard")
+        lb_c1, lb_c2 = st.columns(2)
+        with lb_c1:
+            lb_start = st.date_input("Start date", value=dt.date(dt.date.today().year, 3, 1), key="lb_start")
+        with lb_c2:
+            lb_end = st.date_input("End date", value=dt.date.today(), key="lb_end")
+
+        lb_hand = st.radio("Pitcher hand", ["All", "RHP", "LHP"], horizontal=True, key="lb_hand")
+        lb_pitch = st.selectbox("Pitch type", ["All", "4-Seam Fastball", "Sinker", "Cutter", "Slider", "Sweeper", "Curveball", "Changeup", "Splitter"], key="lb_pitch")
+        lb_min = st.slider("Min pitches", 10, 300, 50, key="lb_min")
+
+        PITCH_NAME_TO_CODE = {v: k for k, v in PITCH_NAMES.items()}
+
+        if st.button("Load Leaderboard", key="lb_btn"):
+            with st.spinner("Pulling league data..."):
+                try:
+                    from pybaseball import statcast
+                    lg_raw = statcast(lb_start.strftime("%Y-%m-%d"), lb_end.strftime("%Y-%m-%d"))
+                    lg_raw = pd.DataFrame(lg_raw) if lg_raw is not None else pd.DataFrame()
+                    if not lg_raw.empty:
+                        lg_raw = add_helpers(lg_raw)
+                        lg_raw = valid_pitch_rows(lg_raw)
+                        _ss_set("lb_data", lg_raw)
+                    else:
+                        st.warning("No data returned for that date range.")
+                except Exception as e:
+                    st.error(f"Failed: {e}")
+
+        lb_data = _ss_get("lb_data", pd.DataFrame())
+
+        if lb_data is not None and not lb_data.empty:
+            df_lb = lb_data.copy()
+
+            # Hand filter
+            if lb_hand != "All" and "p_throws" in df_lb.columns:
+                hand_code = "R" if lb_hand == "RHP" else "L"
+                df_lb = df_lb[df_lb["p_throws"] == hand_code]
+
+            # Pitch filter
+            if lb_pitch != "All":
+                pt_code = PITCH_NAME_TO_CODE.get(lb_pitch, lb_pitch)
+                df_lb = df_lb[df_lb["pitch_type"] == pt_code]
+
+            pitcher_df_lb = load_pitcher_dropdown()
+            rows = []
+            for pid, g in df_lb.groupby("pitcher"):
+                if len(g) < lb_min:
+                    continue
+                name_hit = pitcher_df_lb.loc[pitcher_df_lb["key_mlbam"].astype("Int64") == int(pid)]
+                name = str(name_hit.iloc[0]["display"]) if not name_hit.empty else f"ID {pid}"
+
+                pitches = len(g)
+                velo = float(safe_num(g["release_speed"]).mean()) if "release_speed" in g.columns else None
+                ivb = float(safe_num(g["iVB_in"]).mean()) if "iVB_in" in g.columns else None
+                hb = float(safe_num(g["HB_in"]).mean()) if "HB_in" in g.columns else None
+                spin = float(safe_num(g["release_spin_rate"]).mean()) if "release_spin_rate" in g.columns else None
+                ext = float(safe_num(g["Ext"]).mean()) if "Ext" in g.columns else None
+                swings = int(g["is_swing"].sum()) if "is_swing" in g.columns else 0
+                whiffs = int(g["is_whiff"].sum()) if "is_whiff" in g.columns else 0
+                called = int(g["is_called_strike"].sum()) if "is_called_strike" in g.columns else 0
+                csw = (called + whiffs) / pitches * 100 if pitches else None
+                swstr = whiffs / pitches * 100 if pitches else None
+                out_zone = (~g["in_zone"].fillna(False).astype(bool))
+                ozs = int((g["is_swing"] & out_zone).sum()) if "is_swing" in g.columns else 0
+                ozp = int(out_zone.sum())
+                chase = ozs / ozp * 100 if ozp else None
+                xwoba = xwoba_savant_like(g)
+
+                rows.append({
+                    "Pitcher": name,
+                    "MLBAM": int(pid),
+                    "Pitches": pitches,
+                    "Velo": round(velo, 1) if velo else None,
+                    "iVB": round(ivb, 1) if ivb else None,
+                    "HB": round(hb, 1) if hb else None,
+                    "Spin": round(spin, 0) if spin else None,
+                    "Ext": round(ext, 2) if ext else None,
+                    "CSW%": round(csw, 1) if csw else None,
+                    "SwStr%": round(swstr, 1) if swstr else None,
+                    "Chase%": round(chase, 1) if chase else None,
+                    "xwOBA": round(xwoba, 3) if xwoba else None,
+                })
+
+            if rows:
+                lb_df = pd.DataFrame(rows)
+                sort_col = st.selectbox("Sort by", [c for c in lb_df.columns if c not in ["Pitcher","MLBAM"]], key="lb_sort")
+                asc = sort_col in ["xwOBA", "BB%", "ERA", "FIP"]
+                lb_df = lb_df.sort_values(sort_col, ascending=asc, na_position="last").reset_index(drop=True)
+                lb_df.insert(0, "Rank", range(1, len(lb_df) + 1))
+                show_cols = [c for c in lb_df.columns if c != "MLBAM"]
+                st.dataframe(lb_df[show_cols], use_container_width=True, hide_index=True)
+
+                st.markdown("---")
+                sel = st.selectbox("Load pitcher into Dashboard", lb_df["Pitcher"].tolist(), key="lb_sel")
+                if st.button("View in Dashboard →", key="lb_view"):
+                    mlbam_sel = int(lb_df[lb_df["Pitcher"]==sel]["MLBAM"].iloc[0])
+                    st.info(f"Enter MLBAM ID **{mlbam_sel}** in the Manual MLBAM ID field in the sidebar, then click Run / Refresh Data.")
+            else:
+                st.info("No pitchers met the minimum pitch threshold.")
+        else:
+            st.info("Set a date range and click Load Leaderboard to begin.")
+
+    with tab_dashboard:
+        start_str = start_date.strftime("%Y-%m-%d")
+        end_str = end_date.strftime("%Y-%m-%d")
+        current_year = int(end_date.year)
+
+        params = (
+            APP_VERSION, mlbam_id, fg_id, display_name, start_str, end_str,
+            heat_mode, league_compare, baseline_days, include_statcast_xwoba,
+            include_st, include_post
+        )
+
+        if run_btn or _ss_get("loaded_params") != params:
+            # --- Pitcher pull ---
+            with st.spinner("Fetching Statcast pitcher data..."):
+                try:
+                    sc_raw = fetch_statcast_pitcher(mlbam_id, start_str, end_str, allowed_gt=allowed_gt)
+                except _REQ_EXC:
+                    st.error("Statcast pitcher pull timed out. Try a smaller date range and rerun.")
+                    return
+                except Exception as e:
+                    st.error(f"Statcast pitcher pull failed: {e}")
+                    return
+
+            if sc_raw.empty:
+                _ss_set("sc", pd.DataFrame())
+                _ss_set("baselines", {})
+                _ss_set("league_zone_contact", {})
+                _ss_set("loaded_params", params)
+                st.warning("No Statcast rows returned. Try a wider date range (or enable ST/Postseason).")
                 return
-            except Exception as e:
-                st.error(f"Statcast pitcher pull failed: {e}")
-                return
 
-        if sc_raw.empty:
-            _ss_set("sc", pd.DataFrame())
-            _ss_set("baselines", {})
-            _ss_set("league_zone_contact", {})
+            sc = add_helpers(sc_raw)
+            _ss_set("sc", sc)
+
+            baselines = {}
+            league_zone_contact = {}
+
+            # --- League pulls (baseline window) ---
+            if league_compare:
+                # Use full season dates for league baseline
+                base_start_str = f"{end_date.year}-03-01"
+                base_end_str = end_date.strftime("%Y-%m-%d")
+
+                with st.spinner("Fetching league Statcast (season baseline)..."):
+                    try:
+                        lg = fetch_statcast_league_simple(base_start_str, base_end_str, allowed_gt=frozenset(allowed_gt))
+                    except _REQ_EXC:
+                        lg = pd.DataFrame()
+                        st.warning("League pull timed out (baseline window). Pitch shading + Stuff+ may be unavailable.")
+                    except Exception:
+                        lg = pd.DataFrame()
+                        st.warning("League pull failed (baseline window). Pitch shading + Stuff+ may be unavailable.")
+
+                if lg is not None and not lg.empty:
+                    lg = add_helpers(lg)
+                    baselines = compute_league_pitchtype_baselines(lg, min_pitches=MIN_BASELINE_PITCHES)
+                    league_zone_contact = compute_zone_contact_block(lg)
+
+            _ss_set("baselines", baselines)
+            _ss_set("league_zone_contact", league_zone_contact)
             _ss_set("loaded_params", params)
-            st.warning("No Statcast rows returned. Try a wider date range (or enable ST/Postseason).")
+
+        sc: pd.DataFrame = _ss_get("sc", pd.DataFrame())
+        baselines: dict = _ss_get("baselines", {})
+        league_zone_contact: dict = _ss_get("league_zone_contact", {})
+
+        if sc is None or sc.empty:
+            st.info("Open the sidebar and click **Run / Refresh Data**.")
             return
 
-        sc = add_helpers(sc_raw)
-        _ss_set("sc", sc)
-
-        baselines = {}
-        league_zone_contact = {}
-
-        # --- League pulls (baseline window) ---
-        if league_compare:
-            base_end = end_date
-            base_start = max(start_date, base_end - dt.timedelta(days=int(baseline_days)))
-            base_start_str = base_start.strftime("%Y-%m-%d")
-            base_end_str = base_end.strftime("%Y-%m-%d")
-
-            with st.spinner(f"Fetching league Statcast ({baseline_days}d window) ..."):
-                try:
-                    lg = fetch_statcast_league_simple(base_start_str, base_end_str, allowed_gt=frozenset(allowed_gt))
-                except _REQ_EXC:
-                    lg = pd.DataFrame()
-                    st.warning("League pull timed out (baseline window). Pitch shading + Stuff+ may be unavailable.")
-                except Exception:
-                    lg = pd.DataFrame()
-                    st.warning("League pull failed (baseline window). Pitch shading + Stuff+ may be unavailable.")
-
-            if lg is not None and not lg.empty:
-                lg = add_helpers(lg)
-                baselines = compute_league_pitchtype_baselines(lg, min_pitches=MIN_BASELINE_PITCHES)
-                league_zone_contact = compute_zone_contact_block(lg)
-
-        _ss_set("baselines", baselines)
-        _ss_set("league_zone_contact", league_zone_contact)
-        _ss_set("loaded_params", params)
-
-    sc: pd.DataFrame = _ss_get("sc", pd.DataFrame())
-    baselines: dict = _ss_get("baselines", {})
-    league_zone_contact: dict = _ss_get("league_zone_contact", {})
-
-    if sc is None or sc.empty:
-        st.info("Open the sidebar and click **Run / Refresh Data**.")
-        return
-
-    # -----------------------------------------------------
-    # Season summary
-    # -----------------------------------------------------
-    with st.spinner("Building last-3-seasons summary..."):
-        season_tbl = build_last_3_seasons_summary(
-            fg_id=fg_id,
-            mlbam_id=mlbam_id,
-            display_name=display_name,
-            current_year=current_year,
-            allowed_gt={"R"},
-            include_statcast_xwoba=include_statcast_xwoba,
-        )
-    # -----------------------------------------------------
-    # Pitch metrics (fixed totals)
-    # -----------------------------------------------------
-    # Compute per-pitch-type usage% per game and add to sc
-    # usage_cols defined at top of main as {"pitch_usage": "Usage%"}
-
-    pitch_metrics = compute_pitch_metrics(sc)
-    pitch_metrics_disp = apply_all_row_mask(pitch_metrics)
-
-    # -----------------------------------------------------
-    # Header + season summary
-    # -----------------------------------------------------
-    # Team logo + headshot
-    TEAM_IDS = {
-        "ARI":109,"ATL":144,"BAL":110,"BOS":111,"CHC":112,"CWS":145,"CIN":113,
-        "CLE":114,"COL":115,"DET":116,"HOU":117,"KC":118,"LAA":108,"LAD":119,
-        "MIA":146,"MIL":158,"MIN":142,"NYM":121,"NYY":147,"OAK":133,"PHI":143,
-        "PIT":134,"SD":135,"SEA":136,"SF":137,"STL":138,"TB":139,"TEX":140,
-        "TOR":141,"WSH":120,
-    }
-
-    pitcher_team = None
-    if not sc.empty and "home_team" in sc.columns and "away_team" in sc.columns and "inning_topbot" in sc.columns:
-        tb = sc["inning_topbot"].fillna("").astype(str).mode()
-        tb = tb.iloc[0] if not tb.empty else ""
-        if tb.lower().startswith("top"):
-            pitcher_team = sc["home_team"].dropna().astype(str).mode().iloc[0] if not sc["home_team"].dropna().empty else None
-        else:
-            pitcher_team = sc["away_team"].dropna().astype(str).mode().iloc[0] if not sc["away_team"].dropna().empty else None
-
-    headshot_url = f"https://midfield.mlbstatic.com/v1/people/{mlbam_id}/spots/spot"
-    team_id = TEAM_IDS.get(pitcher_team) if pitcher_team else None
-    logo_url = f"https://www.mlbstatic.com/team-logos/{team_id}.svg" if team_id else None
-
-    top_left, top_right = st.columns([2.2, 1])
-
-    with top_left:
-        name_cols = st.columns([0.13, 0.6, 0.13, 1.0])
-        with name_cols[0]:
-            st.image(headshot_url, width=60)
-        with name_cols[1]:
-            st.subheader(display_name.upper())
-        if logo_url:
-            with name_cols[2]:
-                st.image(logo_url, width=45)
-        st.caption(f"{start_str} → {end_str}   ·   game_types={','.join(sorted(list(allowed_gt)))}   ·   app={APP_VERSION}")
-
-        st.markdown("### SEASON SUMMARY")
-        if season_tbl.empty:
-            st.info("No season summary available (likely no FG seasons + no Statcast rows).")
-        else:
-            season_fmt = {
-                "ERA": "{:.2f}",
-                "FIP": "{:.2f}",
-                "xFIP": "{:.2f}",
-                "K%": "{:.2f}",
-                "BB%": "{:.2f}",
-                "K-BB%": "{:.2f}",
-                "xwOBA": "{:.3f}",
-                "VAA": "{:.1f}",
-                "HAA": "{:.1f}",
-                "vRel": "{:.1f}",
-                "hRel": "{:.1f}",
-            }
-            st.dataframe(
-                season_tbl.style.format(season_fmt, na_rep="—"),
-                use_container_width=True,
-                hide_index=True,
+        # -----------------------------------------------------
+        # Season summary
+        # -----------------------------------------------------
+        with st.spinner("Building last-3-seasons summary..."):
+            season_tbl = build_last_3_seasons_summary(
+                fg_id=fg_id,
+                mlbam_id=mlbam_id,
+                display_name=display_name,
+                current_year=current_year,
+                allowed_gt={"R"},
+                include_statcast_xwoba=include_statcast_xwoba,
             )
+        # -----------------------------------------------------
+        # Pitch metrics (fixed totals)
+        # -----------------------------------------------------
+        # Compute per-pitch-type usage% per game and add to sc
+        # usage_cols defined at top of main as {"pitch_usage": "Usage%"}
 
-        st.caption("FanGraphs and Baseball Savant data (xwOBA). Note: If FanGraphs data doesn’t load, enter FG ID — the 5 digits in the player’s FanGraphs page URL.")
+        pitch_metrics = compute_pitch_metrics(sc)
+        pitch_metrics_disp = apply_all_row_mask(pitch_metrics)
 
-    with top_right:
-        st.markdown("### QUICK TOTALS")
-        c1, c2 = st.columns(2)
-        c1.metric("Pitches", f"{len(valid_pitch_rows(sc)):,}")
-        c2.metric("Games", f"{sc['game_date'].nunique():,}" if "game_date" in sc.columns else "—")
-
-    st.divider()
-
-    # -----------------------------------------------------
-    # PLATOON SPLITS
-    # -----------------------------------------------------
-    st.markdown("#### Platoon Splits")
-
-    def compute_platoon_splits(sc, hand):
-        df = sc[sc["stand"] == hand].copy() if "stand" in sc.columns else pd.DataFrame()
-        if df.empty:
-            return None
-        pa_end = _pa_end_rows(df)
-        evs = pa_end["events"].fillna("").astype(str) if not pa_end.empty and "events" in pa_end.columns else pd.Series(dtype=str)
-        h = int(evs.isin(["single","double","triple","home_run"]).sum())
-        hr = int((evs == "home_run").sum())
-        so = int(evs.isin(["strikeout","strikeout_double_play"]).sum())
-        bb = int(evs.isin(["walk","intent_walk"]).sum())
-        hbp = int((evs == "hit_by_pitch").sum())
-        non_ab = {"walk","intent_walk","hit_by_pitch","sac_fly","sac_bunt","catcher_interf"}
-        ab = int((~evs.isin(list(non_ab)) & evs.ne("")).sum())
-        pa = ab + bb + hbp
-        avg = h/ab if ab > 0 else None
-        obp = (h+bb+hbp)/pa if pa > 0 else None
-        doubles = int((evs == "double").sum())
-        triples = int((evs == "triple").sum())
-        tb = h - hr - doubles - triples + 2*doubles + 3*triples + 4*hr
-        slg = tb/ab if ab > 0 else None
-        ops = (obp or 0) + (slg or 0) if obp is not None and slg is not None else None
-        k_pct = so/pa*100 if pa > 0 else None
-        bb_pct = bb/pa*100 if pa > 0 else None
-        ev = float(safe_num(df["launch_speed"]).dropna().mean()) if "launch_speed" in df.columns else None
-        xwoba = xwoba_savant_like(df)
-        return {
-            "Split": f"vs {hand}HH",
-            "PA": pa,
-            "K%": round(k_pct, 1) if k_pct is not None else np.nan,
-            "BB%": round(bb_pct, 1) if bb_pct is not None else np.nan,
-            "AVG": round(avg, 3) if avg is not None else np.nan,
-            "OBP": round(obp, 3) if obp is not None else np.nan,
-            "SLG": round(slg, 3) if slg is not None else np.nan,
-            "OPS": round(ops, 3) if ops is not None else np.nan,
-            "EV": round(ev, 1) if ev is not None else np.nan,
-            "xwOBA": round(xwoba, 3) if xwoba is not None else np.nan,
+        # -----------------------------------------------------
+        # Header + season summary
+        # -----------------------------------------------------
+        # Team logo + headshot
+        TEAM_IDS = {
+            "ARI":109,"ATL":144,"BAL":110,"BOS":111,"CHC":112,"CWS":145,"CIN":113,
+            "CLE":114,"COL":115,"DET":116,"HOU":117,"KC":118,"LAA":108,"LAD":119,
+            "MIA":146,"MIL":158,"MIN":142,"NYM":121,"NYY":147,"OAK":133,"PHI":143,
+            "PIT":134,"SD":135,"SEA":136,"SF":137,"STL":138,"TB":139,"TEX":140,
+            "TOR":141,"WSH":120,
         }
 
-    splits_L = compute_platoon_splits(sc, "L")
-    splits_R = compute_platoon_splits(sc, "R")
-    splits_rows = [s for s in [splits_L, splits_R] if s is not None]
-    if splits_rows:
-        splits_df = pd.DataFrame(splits_rows)
-        splits_fmt = {
-            "PA": "{:.0f}",
-            "K%": "{:.1f}",
-            "BB%": "{:.1f}",
-            "AVG": "{:.3f}",
-            "OBP": "{:.3f}",
-            "SLG": "{:.3f}",
-            "OPS": "{:.3f}",
-            "EV": "{:.1f}",
-            "xwOBA": "{:.3f}",
-        }
-        st.dataframe(splits_df.style.format(splits_fmt, na_rep="—"), use_container_width=True, hide_index=True)
+        pitcher_team = None
+        if not sc.empty and "home_team" in sc.columns and "away_team" in sc.columns and "inning_topbot" in sc.columns:
+            tb = sc["inning_topbot"].fillna("").astype(str).mode()
+            tb = tb.iloc[0] if not tb.empty else ""
+            if tb.lower().startswith("top"):
+                pitcher_team = sc["home_team"].dropna().astype(str).mode().iloc[0] if not sc["home_team"].dropna().empty else None
+            else:
+                pitcher_team = sc["away_team"].dropna().astype(str).mode().iloc[0] if not sc["away_team"].dropna().empty else None
 
-    st.divider()
+        headshot_url = f"https://midfield.mlbstatic.com/v1/people/{mlbam_id}/spots/spot"
+        team_id = TEAM_IDS.get(pitcher_team) if pitcher_team else None
+        logo_url = f"https://www.mlbstatic.com/team-logos/{team_id}.svg" if team_id else None
 
-    # -----------------------------------------------------
-    # Movement + Pitch Metrics
-    # -----------------------------------------------------
-    st.markdown("## PITCH MOVEMENT + METRICS")
-    left_plot, right_tbl = st.columns([1.05, 1.55], gap="large")
+        top_left, top_right = st.columns([2.2, 1])
 
-    with left_plot:
-        plot_pitch_break_cloud(sc, compact=True)
+        with top_left:
+            name_cols = st.columns([0.13, 0.6, 0.13, 1.0])
+            with name_cols[0]:
+                st.image(headshot_url, width=60)
+            with name_cols[1]:
+                st.subheader(display_name.upper())
+            if logo_url:
+                with name_cols[2]:
+                    st.image(logo_url, width=45)
+            st.caption(f"{start_str} → {end_str}   ·   game_types={','.join(sorted(list(allowed_gt)))}   ·   app={APP_VERSION}")
 
-    with right_tbl:
-        st.markdown("### PITCH METRICS")
-        if pitch_metrics_disp.empty:
-            st.warning("No pitch metrics available.")
-        else:
-            fmt_map = {
-                "Pitch%": "{:.1f}",
-                "Pitches": "{:.0f}",
-                "Velo": "{:.1f}",
-                "iVB": "{:.0f}",
-                "HB": "{:.0f}",
-                "Spin": "{:.0f}",
-                "Ext": "{:.2f}",
-                "CalledStr%": "{:.1f}",
-                "SwStr%": "{:.1f}",
-                "Zone%": "{:.1f}",
-                "CSW%": "{:.1f}",
-                "Chase%": "{:.1f}",
-                "ZWhiff%": "{:.1f}",
-                "xwOBA": "{:.3f}",
-                "VAA": "{:.1f}",
-                "HAA": "{:.1f}",
-                "vRel": "{:.1f}",
-                "hRel": "{:.1f}",
-                
+            st.markdown("### SEASON SUMMARY")
+            if season_tbl.empty:
+                st.info("No season summary available (likely no FG seasons + no Statcast rows).")
+            else:
+                season_fmt = {
+                    "ERA": "{:.2f}",
+                    "FIP": "{:.2f}",
+                    "xFIP": "{:.2f}",
+                    "K%": "{:.2f}",
+                    "BB%": "{:.2f}",
+                    "K-BB%": "{:.2f}",
+                    "xwOBA": "{:.3f}",
+                    "VAA": "{:.1f}",
+                    "HAA": "{:.1f}",
+                    "vRel": "{:.1f}",
+                    "hRel": "{:.1f}",
+                }
+                st.dataframe(
+                    season_tbl.style.format(season_fmt, na_rep="—"),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            st.caption("FanGraphs and Baseball Savant data (xwOBA). Note: If FanGraphs data doesn’t load, enter FG ID — the 5 digits in the player’s FanGraphs page URL.")
+
+        with top_right:
+            st.markdown("### QUICK TOTALS")
+            c1, c2 = st.columns(2)
+            c1.metric("Pitches", f"{len(valid_pitch_rows(sc)):,}")
+            c2.metric("Games", f"{sc['game_date'].nunique():,}" if "game_date" in sc.columns else "—")
+
+        st.divider()
+
+        # -----------------------------------------------------
+        # PLATOON SPLITS
+        # -----------------------------------------------------
+        st.markdown("#### Platoon Splits")
+
+        def compute_platoon_splits(sc, hand):
+            df = sc[sc["stand"] == hand].copy() if "stand" in sc.columns else pd.DataFrame()
+            if df.empty:
+                return None
+            pa_end = _pa_end_rows(df)
+            evs = pa_end["events"].fillna("").astype(str) if not pa_end.empty and "events" in pa_end.columns else pd.Series(dtype=str)
+            h = int(evs.isin(["single","double","triple","home_run"]).sum())
+            hr = int((evs == "home_run").sum())
+            so = int(evs.isin(["strikeout","strikeout_double_play"]).sum())
+            bb = int(evs.isin(["walk","intent_walk"]).sum())
+            hbp = int((evs == "hit_by_pitch").sum())
+            non_ab = {"walk","intent_walk","hit_by_pitch","sac_fly","sac_bunt","catcher_interf"}
+            ab = int((~evs.isin(list(non_ab)) & evs.ne("")).sum())
+            pa = ab + bb + hbp
+            avg = h/ab if ab > 0 else None
+            obp = (h+bb+hbp)/pa if pa > 0 else None
+            doubles = int((evs == "double").sum())
+            triples = int((evs == "triple").sum())
+            tb = h - hr - doubles - triples + 2*doubles + 3*triples + 4*hr
+            slg = tb/ab if ab > 0 else None
+            ops = (obp or 0) + (slg or 0) if obp is not None and slg is not None else None
+            k_pct = so/pa*100 if pa > 0 else None
+            bb_pct = bb/pa*100 if pa > 0 else None
+            ev = float(safe_num(df["launch_speed"]).dropna().mean()) if "launch_speed" in df.columns else None
+            xwoba = xwoba_savant_like(df)
+            return {
+                "Split": f"vs {hand}HH",
+                "PA": pa,
+                "K%": round(k_pct, 1) if k_pct is not None else np.nan,
+                "BB%": round(bb_pct, 1) if bb_pct is not None else np.nan,
+                "AVG": round(avg, 3) if avg is not None else np.nan,
+                "OBP": round(obp, 3) if obp is not None else np.nan,
+                "SLG": round(slg, 3) if slg is not None else np.nan,
+                "OPS": round(ops, 3) if ops is not None else np.nan,
+                "EV": round(ev, 1) if ev is not None else np.nan,
+                "xwOBA": round(xwoba, 3) if xwoba is not None else np.nan,
             }
 
-            if league_compare and baselines:
-                st.dataframe(
-                    style_red_green(
-                        pitch_metrics_disp,
-                        {
-                            "Velo": "high_good",
-                            "Spin": "high_good",
-                            "Ext": "high_good",
-                            "CalledStr%": "high_good",
-                            "SwStr%": "high_good",
-                            "CSW%": "high_good",
-                            "Chase%": "high_good",
-                            "ZWhiff%": "high_good",
-                            "xwOBA": "low_good",
-                        },
-                        fmt_map=fmt_map,
-                        pitch_col="Pitch",
-                        baselines=baselines,
-                        baseline_group_col="Pitch",
-                        qualify_col="Pitches",
-                        qualify_min=MIN_BASELINE_PITCHES,
-                    ),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-                st.caption(f"Pitch shading = z-score vs league baseline for THAT pitch type (window = {baseline_days} days).")
+        splits_L = compute_platoon_splits(sc, "L")
+        splits_R = compute_platoon_splits(sc, "R")
+        splits_rows = [s for s in [splits_L, splits_R] if s is not None]
+        if splits_rows:
+            splits_df = pd.DataFrame(splits_rows)
+            splits_fmt = {
+                "PA": "{:.0f}",
+                "K%": "{:.1f}",
+                "BB%": "{:.1f}",
+                "AVG": "{:.3f}",
+                "OBP": "{:.3f}",
+                "SLG": "{:.3f}",
+                "OPS": "{:.3f}",
+                "EV": "{:.1f}",
+                "xwOBA": "{:.3f}",
+            }
+            st.dataframe(splits_df.style.format(splits_fmt, na_rep="—"), use_container_width=True, hide_index=True)
+
+        st.divider()
+
+        # -----------------------------------------------------
+        # Movement + Pitch Metrics
+        # -----------------------------------------------------
+        st.markdown("## PITCH MOVEMENT + METRICS")
+        left_plot, right_tbl = st.columns([1.05, 1.55], gap="large")
+
+        with left_plot:
+            plot_pitch_break_cloud(sc, compact=True)
+
+        with right_tbl:
+            st.markdown("### PITCH METRICS")
+            if pitch_metrics_disp.empty:
+                st.warning("No pitch metrics available.")
             else:
-                st.dataframe(
-                    pitch_metrics_disp.style.format(fmt_map, na_rep="—"),
-                    use_container_width=True,
-                    hide_index=True,
+                fmt_map = {
+                    "Pitch%": "{:.1f}",
+                    "Pitches": "{:.0f}",
+                    "Velo": "{:.1f}",
+                    "iVB": "{:.0f}",
+                    "HB": "{:.0f}",
+                    "Spin": "{:.0f}",
+                    "Ext": "{:.2f}",
+                    "CalledStr%": "{:.1f}",
+                    "SwStr%": "{:.1f}",
+                    "Zone%": "{:.1f}",
+                    "CSW%": "{:.1f}",
+                    "Chase%": "{:.1f}",
+                    "ZWhiff%": "{:.1f}",
+                    "xwOBA": "{:.3f}",
+                    "VAA": "{:.1f}",
+                    "HAA": "{:.1f}",
+                    "vRel": "{:.1f}",
+                    "hRel": "{:.1f}",
+
+                }
+
+                if league_compare and baselines:
+                    st.dataframe(
+                        style_red_green(
+                            pitch_metrics_disp,
+                            {
+                                "Velo": "high_good",
+                                "Spin": "high_good",
+                                "Ext": "high_good",
+                                "CalledStr%": "high_good",
+                                "SwStr%": "high_good",
+                                "CSW%": "high_good",
+                                "Chase%": "high_good",
+                                "ZWhiff%": "high_good",
+                                "xwOBA": "low_good",
+                            },
+                            fmt_map=fmt_map,
+                            pitch_col="Pitch",
+                            baselines=baselines,
+                            baseline_group_col="Pitch",
+                            qualify_col="Pitches",
+                            qualify_min=MIN_BASELINE_PITCHES,
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                    st.caption(f"Pitch shading = z-score vs league baseline for THAT pitch type ({end_date.year} season).")
+                else:
+                    st.dataframe(
+                        pitch_metrics_disp.style.format(fmt_map, na_rep="—"),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+        st.divider()
+
+        # -----------------------------------------------------
+        # AGGRESSION + BATTED BALL
+        # -----------------------------------------------------
+        st.markdown("## AGGRESSION + BATTED BALL")
+        z = compute_zone_contact_block(sc)
+        lgz = league_zone_contact if (league_compare and isinstance(league_zone_contact, dict)) else {}
+
+        def _delta(val, base):
+            if val is None or base is None:
+                return None
+            try:
+                return float(val) - float(base)
+            except Exception:
+                return None
+
+        r1 = st.columns(5)
+        r1[0].metric("Zone%", f"{z['Zone%']:.1f}%" if z["Zone%"] is not None else "—",
+                     delta=(f"{_delta(z['Zone%'], lgz.get('Zone%')):+.1f}%"
+                            if _delta(z["Zone%"], lgz.get("Zone%")) is not None else None))
+        r1[1].metric("First Pitch Strike%", f"{z['First Pitch Strike%']:.1f}%" if z["First Pitch Strike%"] is not None else "—",
+                     delta=(f"{_delta(z['First Pitch Strike%'], lgz.get('First Pitch Strike%')):+.1f}%"
+                            if _delta(z["First Pitch Strike%"], lgz.get("First Pitch Strike%")) is not None else None))
+        r1[2].metric("1-1 Strike%", f"{z['1-1 Strike%']:.1f}%" if z["1-1 Strike%"] is not None else "—",
+                     delta=(f"{_delta(z['1-1 Strike%'], lgz.get('1-1 Strike%')):+.1f}%"
+                            if _delta(z["1-1 Strike%"], lgz.get("1-1 Strike%")) is not None else None))
+        r1[3].metric("AB < 3 Pitches%", f"{z['AB < 3 Pitches%']:.1f}%" if z["AB < 3 Pitches%"] is not None else "—",
+                     delta=(f"{_delta(z['AB < 3 Pitches%'], lgz.get('AB < 3 Pitches%')):+.1f}%"
+                            if _delta(z["AB < 3 Pitches%"], lgz.get("AB < 3 Pitches%")) is not None else None))
+        r1[4].metric("R2K%", f"{z['R2K%']:.1f}%" if z["R2K%"] is not None else "—",
+                     delta=(f"{_delta(z['R2K%'], lgz.get('R2K%')):+.1f}%"
+                            if _delta(z["R2K%"], lgz.get("R2K%")) is not None else None))
+
+        r2 = st.columns(5)
+        r2[0].metric("Swing%", f"{z['Swing%']:.1f}%" if z["Swing%"] is not None else "—",
+                     delta=(f"{_delta(z['Swing%'], lgz.get('Swing%')):+.1f}%"
+                            if _delta(z["Swing%"], lgz.get("Swing%")) is not None else None))
+        r2[1].metric("Exit Velo", f"{z['Exit Velo']:.1f}" if z["Exit Velo"] is not None else "—",
+                     delta=(f"{_delta(z['Exit Velo'], lgz.get('Exit Velo')):+.1f}"
+                            if _delta(z["Exit Velo"], lgz.get("Exit Velo")) is not None else None))
+        r2[2].metric("Launch Angle", f"{z['Launch Angle']:.1f}" if z["Launch Angle"] is not None else "—",
+                     delta=(f"{_delta(z['Launch Angle'], lgz.get('Launch Angle')):+.1f}"
+                            if _delta(z["Launch Angle"], lgz.get("Launch Angle")) is not None else None))
+        r2[3].metric("HardHit%", f"{z['HardHit%']:.1f}%" if z["HardHit%"] is not None else "—",
+                     delta=(f"{_delta(z['HardHit%'], lgz.get('HardHit%')):+.1f}%"
+                            if _delta(z["HardHit%"], lgz.get("HardHit%")) is not None else None))
+        r2[4].metric("BABIP", f"{z['BABIP']:.3f}" if z["BABIP"] is not None else "—",
+                     delta=(f"{_delta(z['BABIP'], lgz.get('BABIP')):+.3f}"
+                            if _delta(z["BABIP"], lgz.get("BABIP")) is not None else None))
+
+        r3 = st.columns(5)
+        r3[0].metric("GB%", f"{z['GB%']:.1f}%" if z["GB%"] is not None else "—",
+                     delta=(f"{_delta(z['GB%'], lgz.get('GB%')):+.1f}%"
+                            if _delta(z["GB%"], lgz.get("GB%")) is not None else None))
+        r3[1].metric("LD%", f"{z['LD%']:.1f}%" if z["LD%"] is not None else "—",
+                     delta=(f"{_delta(z['LD%'], lgz.get('LD%')):+.1f}%"
+                            if _delta(z["LD%"], lgz.get("LD%")) is not None else None))
+        r3[2].metric("FB%", f"{z['FB%']:.1f}%" if z["FB%"] is not None else "—",
+                     delta=(f"{_delta(z['FB%'], lgz.get('FB%')):+.1f}%"
+                            if _delta(z["FB%"], lgz.get("FB%")) is not None else None))
+        r3[3].metric("HR/FB%", f"{z['HR/FB%']:.1f}%" if z["HR/FB%"] is not None else "—",
+                     delta=(f"{_delta(z['HR/FB%'], lgz.get('HR/FB%')):+.1f}%"
+                            if _delta(z["HR/FB%"], lgz.get("HR/FB%")) is not None else None))
+        r3[4].metric("Barrel%", f"{z['Barrel%']:.1f}%" if z["Barrel%"] is not None else "—",
+                     delta=(f"{_delta(z['Barrel%'], lgz.get('Barrel%')):+.1f}%"
+                            if _delta(z["Barrel%"], lgz.get("Barrel%")) is not None else None))
+
+        st.caption("AB < 3 Pitches% = share of plate appearances that end in 1–2 pitches. R2K% = % of AB where count reaches 0-2.")
+        st.divider()
+
+        # -----------------------------------------------------
+        # HEATMAPS
+        # -----------------------------------------------------
+        st.markdown("## HEATMAPS")
+        st.caption("Fastballs / Offspeed / Breaking for LHH and RHH. Red = more frequent / harder contact; Blue = less.")
+        hL, hR = st.columns(2, gap="large")
+
+        with hL:
+            st.markdown("### vs LHH")
+            for grp in PITCH_GROUP_ORDER:
+                plot_heatmap_contour(sc, "L", grp, heat_mode)
+
+        with hR:
+            st.markdown("### vs RHH")
+            for grp in PITCH_GROUP_ORDER:
+                plot_heatmap_contour(sc, "R", grp, heat_mode)
+
+        # -----------------------------------------------------
+        st.divider()
+
+        # -----------------------------------------------------
+        # USAGE
+        # -----------------------------------------------------
+        st.markdown("## USAGE")
+        uL, uR = st.columns(2, gap="large")
+
+        with uL:
+            st.markdown("### vs LHH")
+            tbl = build_usage_situation_table(sc, "L")
+            if tbl.empty:
+                st.info("No LHH data.")
+            else:
+                value_cols = [c for c in tbl.columns if c != "Pitch"]
+                st.dataframe(style_usage_delta_table(tbl, value_cols=value_cols), use_container_width=True, hide_index=True)
+                st.caption("Shading is relative to All Counts: greener = used more, redder = used less.")
+
+        with uR:
+            st.markdown("### vs RHH")
+            tbl = build_usage_situation_table(sc, "R")
+            if tbl.empty:
+                st.info("No RHH data.")
+            else:
+                value_cols = [c for c in tbl.columns if c != "Pitch"]
+                st.dataframe(style_usage_delta_table(tbl, value_cols=value_cols), use_container_width=True, hide_index=True)
+                st.caption("Shading is relative to All Counts: greener = used more, redder = used less.")
+
+        st.divider()
+
+        # -----------------------------------------------------
+        # TRENDS
+        # -----------------------------------------------------
+        st.markdown("## TRENDS")
+
+        pitch_types = sorted(valid_pitch_rows(sc)["pitch_type"].dropna().astype(str).unique().tolist()) if "pitch_type" in sc.columns else []
+        trend_keys = list(TREND_LABELS.keys())
+        all_trend_options = trend_keys + list(usage_cols.keys())
+        all_trend_labels = {**TREND_LABELS, **usage_cols}
+
+        tc1, tc2 = st.columns(2)
+        with tc1:
+            trend_pitch = st.selectbox(
+                "Pitch filter (does NOT refetch data)",
+                options=["(All)"] + pitch_types,
+                index=0,
+                key="trend_pitch_filter_live",
+            )
+        with tc2:
+            trend_var_key = st.selectbox(
+                "Metric",
+                options=all_trend_options,
+                index=0,
+                format_func=lambda k: all_trend_labels.get(k, k),
+                key="trend_metric_live",
+            )
+        trend_vars = [trend_var_key]
+
+        if not trend_vars:
+            st.info("Select a trend metric above.")
+            return
+
+        # Handle pitch_usage specially - always show all pitches as colored lines
+        if "pitch_usage" in trend_vars:
+            if "pitch_type" in sc.columns and "game_pk" in sc.columns and "game_date" in sc.columns:
+                valid_sc = valid_pitch_rows(sc)
+                pitch_types_present = sorted(valid_sc["pitch_type"].dropna().astype(str).unique().tolist())
+                game_totals = valid_sc.groupby(["game_pk","game_date"])["pitch_type"].count().rename("total").reset_index()
+                fig = go.Figure()
+                for ptype in pitch_types_present:
+                    pt_counts = valid_sc[valid_sc["pitch_type"]==ptype].groupby(["game_pk","game_date"])["pitch_type"].count().rename("count").reset_index()
+                    merged = pt_counts.merge(game_totals, on=["game_pk","game_date"])
+                    merged["usage"] = merged["count"] / merged["total"] * 100
+                    merged = merged.sort_values("game_date")
+                    color = PITCH_COLORS.get(ptype, "#9e9e9e")
+                    label = PITCH_NAMES.get(ptype, ptype)
+                    hover = "Date: " + pd.to_datetime(merged["game_date"]).dt.strftime("%Y-%m-%d").astype(str) + "<br>" + label + ": " + merged["usage"].round(1).astype(str) + "%"
+                    fig.add_trace(go.Scatter(
+                        x=pd.to_datetime(merged["game_date"]),
+                        y=merged["usage"],
+                        mode="lines+markers",
+                        name=label,
+                        line=dict(color=color),
+                        hovertext=hover,
+                        hoverinfo="text",
+                    ))
+                fig.update_layout(
+                    height=420,
+                    margin=dict(l=40, r=20, t=40, b=40),
+                    xaxis=dict(title="Date", tickformat="%b %d", showgrid=True, tickangle=-25),
+                    yaxis=dict(title="Usage%", showgrid=True),
+                    legend=dict(orientation="v", x=1.02, y=1.0),
+                    hovermode="x unified",
                 )
+                st.plotly_chart(fig, use_container_width=True)
+            remaining = [v for v in trend_vars if v != "pitch_usage"]
+            if not remaining:
+                return
+            trend_vars = remaining
 
-    st.divider()
-
-    # -----------------------------------------------------
-    # AGGRESSION + BATTED BALL
-    # -----------------------------------------------------
-    st.markdown("## AGGRESSION + BATTED BALL")
-    z = compute_zone_contact_block(sc)
-    lgz = league_zone_contact if (league_compare and isinstance(league_zone_contact, dict)) else {}
-
-    def _delta(val, base):
-        if val is None or base is None:
-            return None
-        try:
-            return float(val) - float(base)
-        except Exception:
-            return None
-
-    r1 = st.columns(5)
-    r1[0].metric("Zone%", f"{z['Zone%']:.1f}%" if z["Zone%"] is not None else "—",
-                 delta=(f"{_delta(z['Zone%'], lgz.get('Zone%')):+.1f}%"
-                        if _delta(z["Zone%"], lgz.get("Zone%")) is not None else None))
-    r1[1].metric("First Pitch Strike%", f"{z['First Pitch Strike%']:.1f}%" if z["First Pitch Strike%"] is not None else "—",
-                 delta=(f"{_delta(z['First Pitch Strike%'], lgz.get('First Pitch Strike%')):+.1f}%"
-                        if _delta(z["First Pitch Strike%"], lgz.get("First Pitch Strike%")) is not None else None))
-    r1[2].metric("1-1 Strike%", f"{z['1-1 Strike%']:.1f}%" if z["1-1 Strike%"] is not None else "—",
-                 delta=(f"{_delta(z['1-1 Strike%'], lgz.get('1-1 Strike%')):+.1f}%"
-                        if _delta(z["1-1 Strike%"], lgz.get("1-1 Strike%")) is not None else None))
-    r1[3].metric("AB < 3 Pitches%", f"{z['AB < 3 Pitches%']:.1f}%" if z["AB < 3 Pitches%"] is not None else "—",
-                 delta=(f"{_delta(z['AB < 3 Pitches%'], lgz.get('AB < 3 Pitches%')):+.1f}%"
-                        if _delta(z["AB < 3 Pitches%"], lgz.get("AB < 3 Pitches%")) is not None else None))
-    r1[4].metric("R2K%", f"{z['R2K%']:.1f}%" if z["R2K%"] is not None else "—",
-                 delta=(f"{_delta(z['R2K%'], lgz.get('R2K%')):+.1f}%"
-                        if _delta(z["R2K%"], lgz.get("R2K%")) is not None else None))
-
-    r2 = st.columns(5)
-    r2[0].metric("Swing%", f"{z['Swing%']:.1f}%" if z["Swing%"] is not None else "—",
-                 delta=(f"{_delta(z['Swing%'], lgz.get('Swing%')):+.1f}%"
-                        if _delta(z["Swing%"], lgz.get("Swing%")) is not None else None))
-    r2[1].metric("Exit Velo", f"{z['Exit Velo']:.1f}" if z["Exit Velo"] is not None else "—",
-                 delta=(f"{_delta(z['Exit Velo'], lgz.get('Exit Velo')):+.1f}"
-                        if _delta(z["Exit Velo"], lgz.get("Exit Velo")) is not None else None))
-    r2[2].metric("Launch Angle", f"{z['Launch Angle']:.1f}" if z["Launch Angle"] is not None else "—",
-                 delta=(f"{_delta(z['Launch Angle'], lgz.get('Launch Angle')):+.1f}"
-                        if _delta(z["Launch Angle"], lgz.get("Launch Angle")) is not None else None))
-    r2[3].metric("HardHit%", f"{z['HardHit%']:.1f}%" if z["HardHit%"] is not None else "—",
-                 delta=(f"{_delta(z['HardHit%'], lgz.get('HardHit%')):+.1f}%"
-                        if _delta(z["HardHit%"], lgz.get("HardHit%")) is not None else None))
-    r2[4].metric("BABIP", f"{z['BABIP']:.3f}" if z["BABIP"] is not None else "—",
-                 delta=(f"{_delta(z['BABIP'], lgz.get('BABIP')):+.3f}"
-                        if _delta(z["BABIP"], lgz.get("BABIP")) is not None else None))
-
-    r3 = st.columns(5)
-    r3[0].metric("GB%", f"{z['GB%']:.1f}%" if z["GB%"] is not None else "—",
-                 delta=(f"{_delta(z['GB%'], lgz.get('GB%')):+.1f}%"
-                        if _delta(z["GB%"], lgz.get("GB%")) is not None else None))
-    r3[1].metric("LD%", f"{z['LD%']:.1f}%" if z["LD%"] is not None else "—",
-                 delta=(f"{_delta(z['LD%'], lgz.get('LD%')):+.1f}%"
-                        if _delta(z["LD%"], lgz.get("LD%")) is not None else None))
-    r3[2].metric("FB%", f"{z['FB%']:.1f}%" if z["FB%"] is not None else "—",
-                 delta=(f"{_delta(z['FB%'], lgz.get('FB%')):+.1f}%"
-                        if _delta(z["FB%"], lgz.get("FB%")) is not None else None))
-    r3[3].metric("HR/FB%", f"{z['HR/FB%']:.1f}%" if z["HR/FB%"] is not None else "—",
-                 delta=(f"{_delta(z['HR/FB%'], lgz.get('HR/FB%')):+.1f}%"
-                        if _delta(z["HR/FB%"], lgz.get("HR/FB%")) is not None else None))
-    r3[4].metric("SweetSpot%", f"{z['SweetSpot%']:.1f}%" if z["SweetSpot%"] is not None else "—",
-                 delta=(f"{_delta(z['SweetSpot%'], lgz.get('SweetSpot%')):+.1f}%"
-                        if _delta(z["SweetSpot%"], lgz.get("SweetSpot%")) is not None else None))
-
-    st.caption("AB < 3 Pitches% = share of plate appearances that end in 1–2 pitches. R2K% = % of AB where count reaches 0-2.")
-    st.divider()
-
-    # -----------------------------------------------------
-    # HEATMAPS
-    # -----------------------------------------------------
-    st.markdown("## HEATMAPS")
-    st.caption("Fastballs / Offspeed / Breaking for LHH and RHH. Red = more frequent / harder contact; Blue = less.")
-    hL, hR = st.columns(2, gap="large")
-
-    with hL:
-        st.markdown("### vs LHH")
-        for grp in PITCH_GROUP_ORDER:
-            plot_heatmap_contour(sc, "L", grp, heat_mode)
-
-    with hR:
-        st.markdown("### vs RHH")
-        for grp in PITCH_GROUP_ORDER:
-            plot_heatmap_contour(sc, "R", grp, heat_mode)
-
-    # -----------------------------------------------------
-    st.divider()
-
-    # -----------------------------------------------------
-    # USAGE
-    # -----------------------------------------------------
-    st.markdown("## USAGE")
-    uL, uR = st.columns(2, gap="large")
-
-    with uL:
-        st.markdown("### vs LHH")
-        tbl = build_usage_situation_table(sc, "L")
-        if tbl.empty:
-            st.info("No LHH data.")
-        else:
-            value_cols = [c for c in tbl.columns if c != "Pitch"]
-            st.dataframe(style_usage_delta_table(tbl, value_cols=value_cols), use_container_width=True, hide_index=True)
-            st.caption("Shading is relative to All Counts: greener = used more, redder = used less.")
-
-    with uR:
-        st.markdown("### vs RHH")
-        tbl = build_usage_situation_table(sc, "R")
-        if tbl.empty:
-            st.info("No RHH data.")
-        else:
-            value_cols = [c for c in tbl.columns if c != "Pitch"]
-            st.dataframe(style_usage_delta_table(tbl, value_cols=value_cols), use_container_width=True, hide_index=True)
-            st.caption("Shading is relative to All Counts: greener = used more, redder = used less.")
-
-    st.divider()
-
-    # -----------------------------------------------------
-    # TRENDS
-    # -----------------------------------------------------
-    st.markdown("## TRENDS")
-
-    pitch_types = sorted(valid_pitch_rows(sc)["pitch_type"].dropna().astype(str).unique().tolist()) if "pitch_type" in sc.columns else []
-    trend_keys = list(TREND_LABELS.keys())
-    all_trend_options = trend_keys + list(usage_cols.keys())
-    all_trend_labels = {**TREND_LABELS, **usage_cols}
-
-    tc1, tc2 = st.columns(2)
-    with tc1:
-        trend_pitch = st.selectbox(
-            "Pitch filter (does NOT refetch data)",
-            options=["(All)"] + pitch_types,
-            index=0,
-            key="trend_pitch_filter_live",
-        )
-    with tc2:
-        trend_var_key = st.selectbox(
-            "Metric",
-            options=all_trend_options,
-            index=0,
-            format_func=lambda k: all_trend_labels.get(k, k),
-            key="trend_metric_live",
-        )
-    trend_vars = [trend_var_key]
-
-    if not trend_vars:
-        st.info("Select a trend metric above.")
-        return
-
-    # Handle pitch_usage specially - always show all pitches as colored lines
-    if "pitch_usage" in trend_vars:
-        if "pitch_type" in sc.columns and "game_pk" in sc.columns and "game_date" in sc.columns:
-            valid_sc = valid_pitch_rows(sc)
-            pitch_types_present = sorted(valid_sc["pitch_type"].dropna().astype(str).unique().tolist())
-            game_totals = valid_sc.groupby(["game_pk","game_date"])["pitch_type"].count().rename("total").reset_index()
+        if trend_pitch == "(All)" and "pitch_type" in sc.columns:
+            pitch_types_present = sorted(valid_pitch_rows(sc)["pitch_type"].dropna().astype(str).unique().tolist())
             fig = go.Figure()
+            opp = None
             for ptype in pitch_types_present:
-                pt_counts = valid_sc[valid_sc["pitch_type"]==ptype].groupby(["game_pk","game_date"])["pitch_type"].count().rename("count").reset_index()
-                merged = pt_counts.merge(game_totals, on=["game_pk","game_date"])
-                merged["usage"] = merged["count"] / merged["total"] * 100
-                merged = merged.sort_values("game_date")
+                tr_p = trend_by_game(sc, trend_vars, pitch_filter=ptype)
+                if tr_p.empty:
+                    continue
                 color = PITCH_COLORS.get(ptype, "#9e9e9e")
                 label = PITCH_NAMES.get(ptype, ptype)
-                hover = "Date: " + pd.to_datetime(merged["game_date"]).dt.strftime("%Y-%m-%d").astype(str) + "<br>" + label + ": " + merged["usage"].round(1).astype(str) + "%"
-                fig.add_trace(go.Scatter(
-                    x=pd.to_datetime(merged["game_date"]),
-                    y=merged["usage"],
-                    mode="lines+markers",
-                    name=label,
-                    line=dict(color=color),
-                    hovertext=hover,
-                    hoverinfo="text",
-                ))
+                for v in trend_vars:
+                    if v not in tr_p.columns:
+                        continue
+                    y = safe_num(tr_p[v])
+                    hover = "Date: " + tr_p["game_date"].dt.strftime("%Y-%m-%d").astype(str) + "<br>" + label + ": " + y.round(3).astype(str)
+                    fig.add_trace(go.Scatter(
+                        x=tr_p["game_date"],
+                        y=y,
+                        mode="lines+markers",
+                        name=f"{label}" + (f" ({TREND_LABELS.get(v,v)})" if len(trend_vars) > 1 else ""),
+                        line=dict(color=color),
+                        hovertext=hover,
+                        hoverinfo="text",
+                    ))
             fig.update_layout(
                 height=420,
                 margin=dict(l=40, r=20, t=40, b=40),
                 xaxis=dict(title="Date", tickformat="%b %d", showgrid=True, tickangle=-25),
-                yaxis=dict(title="Usage%", showgrid=True),
+                yaxis=dict(title=all_trend_labels.get(trend_vars[0], trend_vars[0]) if trend_vars else "Value", showgrid=True),
                 legend=dict(orientation="v", x=1.02, y=1.0),
                 hovermode="x unified",
             )
             st.plotly_chart(fig, use_container_width=True)
-        remaining = [v for v in trend_vars if v != "pitch_usage"]
-        if not remaining:
-            return
-        trend_vars = remaining
+        else:
+            tr = trend_by_game(sc, trend_vars, pitch_filter=trend_pitch)
+            if tr.empty:
+                st.info("No trend rows for this selection (try a wider range or different pitch filter).")
+                return
+            plot_trends_plotly(tr, trend_vars, normalize=normalize)
 
-    if trend_pitch == "(All)" and "pitch_type" in sc.columns:
-        pitch_types_present = sorted(valid_pitch_rows(sc)["pitch_type"].dropna().astype(str).unique().tolist())
-        fig = go.Figure()
-        opp = None
-        for ptype in pitch_types_present:
-            tr_p = trend_by_game(sc, trend_vars, pitch_filter=ptype)
-            if tr_p.empty:
-                continue
-            color = PITCH_COLORS.get(ptype, "#9e9e9e")
-            label = PITCH_NAMES.get(ptype, ptype)
-            for v in trend_vars:
-                if v not in tr_p.columns:
-                    continue
-                y = safe_num(tr_p[v])
-                hover = "Date: " + tr_p["game_date"].dt.strftime("%Y-%m-%d").astype(str) + "<br>" + label + ": " + y.round(3).astype(str)
-                fig.add_trace(go.Scatter(
-                    x=tr_p["game_date"],
-                    y=y,
-                    mode="lines+markers",
-                    name=f"{label}" + (f" ({TREND_LABELS.get(v,v)})" if len(trend_vars) > 1 else ""),
-                    line=dict(color=color),
-                    hovertext=hover,
-                    hoverinfo="text",
-                ))
-        fig.update_layout(
-            height=420,
-            margin=dict(l=40, r=20, t=40, b=40),
-            xaxis=dict(title="Date", tickformat="%b %d", showgrid=True, tickangle=-25),
-            yaxis=dict(title=all_trend_labels.get(trend_vars[0], trend_vars[0]) if trend_vars else "Value", showgrid=True),
-            legend=dict(orientation="v", x=1.02, y=1.0),
-            hovermode="x unified",
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        tr = trend_by_game(sc, trend_vars, pitch_filter=trend_pitch)
-        if tr.empty:
-            st.info("No trend rows for this selection (try a wider range or different pitch filter).")
-            return
-        plot_trends_plotly(tr, trend_vars, normalize=normalize)
 
 if __name__ == "__main__":
     main()
