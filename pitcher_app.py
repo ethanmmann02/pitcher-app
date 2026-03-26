@@ -422,7 +422,7 @@ def load_pitcher_dropdown() -> pd.DataFrame:
         reg = reg.sort_values(["display"]).reset_index(drop=True)
         return reg[["display", "display_norm", "key_mlbam", "key_fangraphs"]]
 
-    return memo("pitcher_dropdown_v62", _build)
+    return memo("pitcher_dropdown_v66", _build)
 
 def resolve_name_from_mlbam(pitcher_df: pd.DataFrame, mlbam_id: int) -> str:
     hit = pitcher_df.loc[pitcher_df["key_mlbam"].astype("Int64") == int(mlbam_id)]
@@ -454,7 +454,7 @@ def fetch_statcast_pitcher(mlbam_id: int, start_date: str, end_date: str, allowe
         df = pd.DataFrame(df) if df is not None else pd.DataFrame()
         df = filter_game_types(df, allowed_gt)
         return df
-    return memo_by_params("sc_pitcher_v62", (APP_VERSION, mlbam_id, start_date, end_date, tuple(sorted(list(allowed_gt)))), _build)
+    return memo_by_params("sc_pitcher_v66", (APP_VERSION, mlbam_id, start_date, end_date, tuple(sorted(list(allowed_gt)))), _build)
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_statcast_league_simple(start_date: str, end_date: str, allowed_gt: frozenset) -> pd.DataFrame:
@@ -492,7 +492,7 @@ def fetch_statcast_league_chunked(
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
     return memo_by_params(
-        "sc_league_chunked_v62",
+        "sc_league_chunked_v66",
         (APP_VERSION, start_date, end_date, tuple(sorted(list(allowed_gt))), max_months),
         _build
     )
@@ -504,7 +504,7 @@ def fetch_fg_pitching_stats_year(year: int) -> pd.DataFrame:
             return pd.DataFrame(df) if df is not None else pd.DataFrame()
         except Exception:
             return pd.DataFrame()
-    return memo_by_params("fg_pitching_stats_v62", (APP_VERSION, year), _build)
+    return memo_by_params("fg_pitching_stats_v66", (APP_VERSION, year), _build)
 
 def fetch_statcast_pitcher_season(mlbam_id: int, year: int, allowed_gt: set[str]) -> pd.DataFrame:
     s, e = season_window_statcast(year)
