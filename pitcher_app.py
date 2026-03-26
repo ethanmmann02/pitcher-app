@@ -870,7 +870,9 @@ def compute_zone_contact_block(sc: pd.DataFrame) -> dict[str, float | None]:
         ev_series = safe_num(bbe["launch_speed"])
         la_series = safe_num(bbe["launch_angle"])
         barrels = sum(_is_barrel(float(ev_mph), float(la_deg)) for ev_mph, la_deg in zip(ev_series, la_series))
+        print(f"BARREL DEBUG: {barrels} barrels / {len(bbe)} bbe = {barrels/len(bbe)*100:.1f}%")
         out["Barrel%"] = float((barrels / len(bbe)) * 100.0) if len(bbe) else None
+        import sys; print(f"DEBUG barrel: {barrels} barrels out of {len(bbe)} BBE = {out[chr(66)+chr(97)+chr(114)+chr(114)+chr(101)+chr(108)+chr(37)]:.1f}%", file=sys.stderr)
 
     if "estimated_slg_using_speedangle" in df.columns:
         xslg = safe_num(df["estimated_slg_using_speedangle"]).dropna()
