@@ -60,7 +60,7 @@ except Exception:
 # =========================================================
 # IMPORTANT: bump APP_VERSION whenever you change logic
 # =========================================================
-APP_VERSION = "v6.5"
+APP_VERSION = "v6.6"
 
 # =========================================================
 # Page config + light CSS
