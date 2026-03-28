@@ -504,7 +504,7 @@ def fetch_fg_pitching_stats_year(year: int) -> pd.DataFrame:
             return pd.DataFrame(df) if df is not None else pd.DataFrame()
         except Exception:
             return pd.DataFrame()
-    return memo_by_params("fg_pitching_stats_v66", (APP_VERSION, year), _build)
+    return memo_by_params("fg_pitching_stats_v67", (APP_VERSION, year), _build)
 
 def fetch_statcast_pitcher_season(mlbam_id: int, year: int, allowed_gt: set[str]) -> pd.DataFrame:
     s, e = season_window_statcast(year)
