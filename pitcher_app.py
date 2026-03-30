@@ -497,14 +497,13 @@ def fetch_statcast_league_chunked(
         _build
     )
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_fg_pitching_stats_year(year: int) -> pd.DataFrame:
-    def _build():
-        try:
-            df = pitching_stats(year, qual=0)
-            return pd.DataFrame(df) if df is not None else pd.DataFrame()
-        except Exception:
-            return pd.DataFrame()
-    return memo_by_params("fg_pitching_stats_v67", (APP_VERSION, year), _build)
+    try:
+        df = pitching_stats(year, qual=0)
+        return pd.DataFrame(df) if df is not None else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
 
 def fetch_statcast_pitcher_season(mlbam_id: int, year: int, allowed_gt: set[str]) -> pd.DataFrame:
     s, e = season_window_statcast(year)
