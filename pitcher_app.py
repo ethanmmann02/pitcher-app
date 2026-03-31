@@ -1888,6 +1888,48 @@ def main():
             st.info("Set a date range and click Load Leaderboard to begin.")
 
     with tab_dashboard:
+        # ── Yesterday's Notables Ticker ──────────────────────────────────
+        try:
+            import requests as _req
+            yesterday = (dt.date.today() - dt.timedelta(days=1)).strftime("%Y-%m-%d")
+            sched = _req.get(f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={yesterday}&hydrate=decisions", timeout=8).json()
+            yday_dates = sched.get("dates", [])
+            notables = []
+            if yday_dates:
+                for game in yday_dates[0].get("games", []):
+                    game_pk = game.get("gamePk")
+                    try:
+                        box = _req.get(f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore", timeout=8).json()
+                        for side in ["away", "home"]:
+                            team_data = box.get("teams", {}).get(side, {})
+                            pitchers = team_data.get("pitchers", [])
+                            players = team_data.get("players", {})
+                            if not pitchers:
+                                continue
+                            starter_id = pitchers[0]
+                            p = players.get(f"ID{starter_id}", {})
+                            stats = p.get("stats", {}).get("pitching", {})
+                            if stats.get("gamesStarted", 0) == 0:
+                                continue
+                            name = p.get("person", {}).get("fullName", "")
+                            team_abbr = team_data.get("team", {}).get("abbreviation", "")
+                            ip = stats.get("inningsPitched", "0")
+                            k = stats.get("strikeOuts", 0)
+                            er = stats.get("earnedRuns", 0)
+                            pitches = stats.get("pitchesThrown", 0)
+                            # Build notable string
+                            parts = [f"{float(ip):.1f} IP"]
+                            if k >= 8: parts.append(f"{k} K")
+                            if er == 0 and float(ip) >= 5: parts.append("0 ER")
+                            notables.append(f"**{name}** ({team_abbr}) — {' · '.join(parts)}")
+                    except Exception:
+                        continue
+            if notables:
+                ticker = "   |   ".join(notables)
+                st.markdown(f"<div style='background:#f0f4ff;padding:6px 12px;border-radius:8px;font-size:0.85rem;margin-bottom:8px'>📅 <b>Yesterday ({yesterday}):</b>   {ticker}</div>", unsafe_allow_html=True)
+        except Exception:
+            pass
+
         start_str = start_date.strftime("%Y-%m-%d")
         end_str = end_date.strftime("%Y-%m-%d")
         current_year = int(end_date.year)
