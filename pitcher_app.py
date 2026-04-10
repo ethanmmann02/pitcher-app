@@ -974,30 +974,67 @@ def build_last_3_seasons_summary(
         return pd.to_numeric(v, errors="coerce")
 
     for yr in years:
-        fg = get_fg_row_for_pitcher_year(fg_id, mlbam_id, display_name, yr)
+        # Compute all stats from Statcast directly (no FanGraphs dependency)
+        try:
+            sc_y = fetch_statcast_pitcher_season(mlbam_id, yr, allowed_gt={"R"})
+        except Exception:
+            sc_y = None
 
-        ip_fg = _num(fg.get("IP", np.nan))
-        era_fg = _num(fg.get("ERA", np.nan))
-        fip_fg = _num(fg.get("FIP", np.nan))
-        xfip_fg = _num(fg.get("xFIP", np.nan))
+        if sc_y is not None and not sc_y.empty:
+            sc_y = add_helpers(sc_y)
+            vp = valid_pitch_rows(sc_y)
 
-        k_pct = parse_pct(fg.get("K%", None))
-        bb_pct = parse_pct(fg.get("BB%", None))
-        kbb = parse_pct(fg.get("K-BB%", None))
+            # IP from outs recorded
+            pa_end = _pa_end_rows(sc_y) if hasattr(sc_y, "columns") else pd.DataFrame()
+            if not pa_end.empty and "events" in pa_end.columns:
+                evs = pa_end["events"].fillna("").astype(str)
+                out_evs = {"strikeout","strikeout_double_play","field_out","force_out",
+                           "grounded_into_double_play","double_play","triple_play",
+                           "fielders_choice_out","sac_fly","sac_bunt"}
+                outs = int(evs.isin(out_evs).sum())
+                outs += int((evs=="grounded_into_double_play").sum())
+                outs += int((evs=="double_play").sum())
+                outs += 2*int((evs=="triple_play").sum())
+                ip_val = outs / 3
+                # K and BB
+                so = int(evs.isin(["strikeout","strikeout_double_play"]).sum())
+                bb = int(evs.isin(["walk","intent_walk"]).sum())
+                hbp = int((evs=="hit_by_pitch").sum())
+                hr = int((evs=="home_run").sum())
+                hits = int(evs.isin(["single","double","triple","home_run"]).sum())
+                non_ab = {"walk","intent_walk","hit_by_pitch","sac_fly","sac_bunt","catcher_interf"}
+                bf = int((~evs.isin(list(non_ab)) & evs.ne("")).sum()) + bb + hbp
+                pa_count = bf
+                k_pct = round(so/pa_count*100, 1) if pa_count else np.nan
+                bb_pct = round(bb/pa_count*100, 1) if pa_count else np.nan
+                kbb = round(k_pct - bb_pct, 1) if pd.notna(k_pct) and pd.notna(bb_pct) else np.nan
+                # ERA
+                er_events = {"single","double","triple","home_run","walk","intent_walk","hit_by_pitch"}
+                runs_col = "post_bat_score" 
+                if "post_fld_score" in sc_y.columns and "fld_score" in sc_y.columns:
+                    runs = int((sc_y["post_fld_score"].fillna(0) - sc_y["fld_score"].fillna(0)).clip(lower=0).sum())
+                elif "post_bat_score" in sc_y.columns and "bat_score" in sc_y.columns:
+                    runs = int((sc_y["post_bat_score"].fillna(0) - sc_y["bat_score"].fillna(0)).clip(lower=0).sum())
+                else:
+                    runs = 0
+                era = round(runs / ip_val * 9, 2) if ip_val > 0 else np.nan
+                ip_str = fmt_ip_from_fg(ip_val)
+                # FIP
+                fip_const = 3.10
+                fip = round(((13*hr + 3*(bb+hbp) - 2*so) / ip_val) + fip_const, 2) if ip_val > 0 else np.nan
+            else:
+                ip_str = "—"; era = fip = k_pct = bb_pct = kbb = np.nan
 
-        xw = None
-        if include_statcast_xwoba:
-            xw = season_xwoba_from_statcast(mlbam_id, yr, allowed_gt={"R"})
+            xw = season_xwoba_from_statcast(mlbam_id, yr, allowed_gt={"R"}) if include_statcast_xwoba else None
+        else:
+            ip_str = "—"; era = fip = k_pct = bb_pct = kbb = np.nan; xw = None
 
         rows.append({
             "Season": yr,
-            "IP": fmt_ip_from_fg(ip_fg) if pd.notna(ip_fg) else "—",
-            "ERA": float(era_fg) if pd.notna(era_fg) else np.nan,
-            "FIP": float(fip_fg) if pd.notna(fip_fg) else np.nan,
-            "xFIP": float(xfip_fg) if pd.notna(xfip_fg) else np.nan,
-            "K%": float(k_pct) if k_pct is not None else np.nan,
-            "BB%": float(bb_pct) if bb_pct is not None else np.nan,
-            "K-BB%": float(kbb) if kbb is not None else np.nan,
+            "FIP": fip,
+            "K%": k_pct,
+            "BB%": bb_pct,
+            "K-BB%": kbb,
             "xwOBA": round(float(xw), 3) if xw is not None else np.nan,
         })
 
