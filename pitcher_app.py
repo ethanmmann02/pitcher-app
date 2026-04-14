@@ -548,12 +548,13 @@ def add_helpers(sc: pd.DataFrame) -> pd.DataFrame:
         az = safe_num(df["az"])
         ax = safe_num(df["ax"])
         # distance from release to plate ~60.5 - release_pos_y
-        t = (-vy0 - np.sqrt(vy0**2 + 2*ay*(17/12))) / ay
-        vz_plate = vz0 + az * t
-        vy_plate = vy0 + ay * t
-        vx_plate = vx0 + ax * t
-        df["VAA"] = np.degrees(np.arctan(vz_plate / np.abs(vy_plate)))
-        df["HAA"] = np.degrees(np.arctan(vx_plate / np.abs(vy_plate)))
+        yf = 17 / 12
+        vy_f = -np.sqrt(vy0**2 - (ay * 2 * (50 - yf)))
+        t = (vy_f - vy0) / ay
+        vz_f = vz0 + az * t
+        vx_f = vx0 + ax * t
+        df["VAA"] = -np.degrees(np.arctan(vz_f / vy_f))
+        df["HAA"] = np.degrees(np.arctan(vx_f / np.abs(vy_f)))
     else:
         df["VAA"] = np.nan
         df["HAA"] = np.nan
@@ -644,6 +645,7 @@ def compute_league_pitchtype_baselines(
         ("iVB", "iVB_in"),
         ("HB", "HB_in"),
         ("Ext", "Ext"),
+        ("VAA", "VAA"),
     ]
 
     for c in ["is_called_strike", "is_swinging_strike", "is_swing", "is_whiff", "in_zone"]:
@@ -1295,6 +1297,7 @@ def compute_pitch_metrics(sc: pd.DataFrame) -> pd.DataFrame:
             "HB": int(round(float(hb))) if pd.notna(hb) else np.nan,
             "Spin": int(round(float(spin))) if pd.notna(spin) else np.nan,
             "Ext": round(float(ext), 2) if pd.notna(ext) else np.nan,
+            "VAA": round(float(vaa), 1) if pd.notna(vaa) else np.nan,
             "CalledStr%": round(float(called_str_pct), 1) if pd.notna(called_str_pct) else np.nan,
             "SwStr%": round(float(swstr_pct), 1) if pd.notna(swstr_pct) else np.nan,
             "CSW%": round(float(csw), 1) if pd.notna(csw) else np.nan,
@@ -1323,7 +1326,7 @@ def compute_pitch_metrics(sc: pd.DataFrame) -> pd.DataFrame:
     # order with Stuff+ after xwOBA
     order = [
         "Pitch", "Pitch%", "Pitches",
-        "Velo", "iVB", "HB", "Spin", "vRel", "hRel", "Ext",
+        "Velo", "iVB", "HB", "Spin", "vRel", "hRel", "Ext", "VAA",
         "CalledStr%", "SwStr%", "CSW%", "Chase%", "ZWhiff%",
         "xwOBA", "Stuff+",
     ]
@@ -1337,7 +1340,7 @@ def apply_all_row_mask(pm: pd.DataFrame) -> pd.DataFrame:
 
     allowed = {
         "Pitch", "Pitches",
-        "Ext",
+        "Ext", "VAA",
         "CalledStr%", "SwStr%", "CSW%", "Chase%", "ZWhiff%",
         "xwOBA",
         "Stuff+",
@@ -2235,6 +2238,7 @@ def main():
                                 "Velo": "high_good",
                                 "Spin": "high_good",
                                 "Ext": "high_good",
+                                "VAA": "high_good",
                                 "CalledStr%": "high_good",
                                 "SwStr%": "high_good",
                                 "CSW%": "high_good",
