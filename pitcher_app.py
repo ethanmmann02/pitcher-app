@@ -1326,7 +1326,7 @@ def compute_pitch_metrics(sc: pd.DataFrame) -> pd.DataFrame:
     # order with Stuff+ after xwOBA
     order = [
         "Pitch", "Pitch%", "Pitches",
-        "Velo", "iVB", "HB", "Spin", "vRel", "hRel", "Ext", "VAA",
+        "Velo", "iVB", "HB", "Spin", "Ext", "VAA", "vRel", "hRel",
         "CalledStr%", "SwStr%", "CSW%", "Chase%", "ZWhiff%",
         "xwOBA", "Stuff+",
     ]
