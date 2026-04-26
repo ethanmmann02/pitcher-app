@@ -2078,7 +2078,8 @@ def main():
             # --- League pulls (baseline window) ---
             if league_compare:
                 # Use full season dates for league baseline
-                base_start_str = f"{end_date.year}-03-01"
+                _base_start = max(__import__("datetime").date(end_date.year, 3, 25), end_date - __import__("datetime").timedelta(days=30))
+                base_start_str = _base_start.strftime("%Y-%m-%d")
                 base_end_str = end_date.strftime("%Y-%m-%d")
 
                 with st.spinner("Fetching league Statcast (season baseline)..."):
