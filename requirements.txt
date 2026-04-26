@@ -2,7 +2,6 @@ streamlit
 pybaseball
 pandas
 numpy<2
-scipy<1.12
 matplotlib
 seaborn
 plotly
