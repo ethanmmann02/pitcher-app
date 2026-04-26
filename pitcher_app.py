@@ -2075,23 +2075,34 @@ def main():
             baselines = {}
             league_zone_contact = {}
 
-            # --- League pulls (baseline window) ---
+            # --- League baseline (hardcoded 2026 season averages) ---
             if league_compare:
-                # Use full season dates for league baseline
-                _base_start = max(__import__("datetime").date(end_date.year, 3, 25), end_date - __import__("datetime").timedelta(days=30))
-                base_start_str = _base_start.strftime("%Y-%m-%d")
-                base_end_str = end_date.strftime("%Y-%m-%d")
-
-                with st.spinner("Fetching league Statcast (season baseline)..."):
-                    try:
-                        lg = fetch_statcast_league_simple(base_start_str, base_end_str, allowed_gt=frozenset(allowed_gt))
-                    except _REQ_EXC:
-                        lg = pd.DataFrame()
-                        st.warning("League pull timed out (baseline window). Pitch shading + Stuff+ may be unavailable.")
-                    except Exception:
-                        lg = pd.DataFrame()
-                        st.warning("League pull failed (baseline window). Pitch shading + Stuff+ may be unavailable.")
-
+                # Hardcoded 2026 season baselines (updated 2026-04-26)
+                # Avoids memory-intensive live pulls on Streamlit Cloud
+                baselines = {
+                    "_ALL_": {
+                        "CalledStr%": (16.47, 6.5), "SwStr%": (25.54, 10.0),
+                        "CSW%": (28.32, 7.5), "Chase%": (29.62, 10.0),
+                        "ZWhiff%": (16.49, 10.0), "Avg EV": (88.53, 3.0),
+                        "HardHit%": (40.34, 7.0), "xwOBA": (0.3247, 0.030),
+                        "Barrel%": (7.8, 3.0), "Velo": (93.5, 3.0),
+                        "Spin": (2300.0, 200.0), "Ext": (6.5, 0.3),
+                        "VAA": (-4.5, 0.5), "Stuff+": (100.0, 10.0),
+                        "GB%": (44.0, 8.0), "LD%": (20.0, 5.0),
+                        "FB%": (36.0, 8.0), "HR/FB%": (12.0, 5.0),
+                        "BABIP": (0.290, 0.040), "K%": (22.5, 5.0), "BB%": (8.5, 3.0),
+                    },
+                    "4-Seam Fastball": {"CalledStr%":(16.0,6.5),"SwStr%":(21.7,10.0),"CSW%":(28.1,7.5),"Chase%":(28.0,10.0),"ZWhiff%":(14.0,10.0),"Velo":(94.6,2.5),"xwOBA":(0.320,0.030),"Stuff+":(100.0,10.0)},
+                    "Sinker": {"CalledStr%":(16.0,6.5),"SwStr%":(13.6,10.0),"CSW%":(28.0,7.5),"Chase%":(27.0,10.0),"ZWhiff%":(10.0,10.0),"Velo":(93.9,2.5),"xwOBA":(0.310,0.030),"Stuff+":(100.0,10.0)},
+                    "Slider": {"CalledStr%":(17.0,6.5),"SwStr%":(34.4,10.0),"CSW%":(31.8,7.5),"Chase%":(35.0,10.0),"ZWhiff%":(22.0,10.0),"Velo":(86.1,2.5),"xwOBA":(0.280,0.030),"Stuff+":(100.0,10.0)},
+                    "Curveball": {"CalledStr%":(17.0,6.5),"SwStr%":(30.8,10.0),"CSW%":(30.0,7.5),"Chase%":(33.0,10.0),"ZWhiff%":(20.0,10.0),"Velo":(79.9,2.5),"xwOBA":(0.290,0.030),"Stuff+":(100.0,10.0)},
+                    "Changeup": {"CalledStr%":(15.0,6.5),"SwStr%":(32.6,10.0),"CSW%":(25.2,7.5),"Chase%":(38.0,10.0),"ZWhiff%":(22.0,10.0),"Velo":(86.1,2.5),"xwOBA":(0.290,0.030),"Stuff+":(100.0,10.0)},
+                    "Cutter": {"CalledStr%":(16.0,6.5),"SwStr%":(23.8,10.0),"CSW%":(28.3,7.5),"Chase%":(30.0,10.0),"ZWhiff%":(16.0,10.0),"Velo":(89.4,2.5),"xwOBA":(0.300,0.030),"Stuff+":(100.0,10.0)},
+                }
+                league_zone_contact = {}
+                _ss_set("baselines", baselines)
+                _ss_set("league_zone_contact", league_zone_contact)
+                lg = pd.DataFrame()  # no live pull needed
                 if lg is not None and not lg.empty:
                     lg = add_helpers(lg)
                     baselines = compute_league_pitchtype_baselines(lg, min_pitches=MIN_BASELINE_PITCHES)
