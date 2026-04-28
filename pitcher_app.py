@@ -1397,7 +1397,7 @@ def compute_pitch_metrics(sc: pd.DataFrame) -> pd.DataFrame:
         "Pitch", "Pitch%", "Pitches",
         "Velo", "iVB", "HB", "Spin", "Ext", "VAA", "vRel", "hRel",
         "CalledStr%", "SwStr%", "CSW%", "Chase%", "ZWhiff%",
-        "xwOBA", "Stuff+",
+        "xwOBA",
     ]
     out = out[[c for c in order if c in out.columns]]
     return out
@@ -1412,7 +1412,6 @@ def apply_all_row_mask(pm: pd.DataFrame) -> pd.DataFrame:
         "Ext", "VAA",
         "CalledStr%", "SwStr%", "CSW%", "Chase%", "ZWhiff%",
         "xwOBA",
-        "Stuff+",
     }
     mask_all = out["Pitch"].astype(str).eq("All")
     for c in out.columns:
@@ -2103,11 +2102,11 @@ def main():
                 _ss_set("baselines", baselines)
                 _ss_set("league_zone_contact", league_zone_contact)
                 lg = pd.DataFrame()  # no live pull needed
-                if lg is not None and not lg.empty:
-                    lg = add_helpers(lg)
-                    baselines = compute_league_pitchtype_baselines(lg, min_pitches=MIN_BASELINE_PITCHES)
-                    league_zone_contact = compute_zone_contact_block(lg)
-
+                # baselines already set above from hardcoded values
+                # if lg is not None and not lg.empty:
+                #     lg = add_helpers(lg)
+                #     baselines = compute_league_pitchtype_baselines(lg, min_pitches=MIN_BASELINE_PITCHES)
+                #     league_zone_contact = compute_zone_contact_block(lg)
             _ss_set("baselines", baselines)
             _ss_set("league_zone_contact", league_zone_contact)
             _ss_set("loaded_params", params)
