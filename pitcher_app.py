@@ -2098,7 +2098,24 @@ def main():
                     "Changeup": {"CalledStr%":(15.0,6.5),"SwStr%":(32.6,10.0),"CSW%":(25.2,7.5),"Chase%":(38.0,10.0),"ZWhiff%":(22.0,10.0),"Velo":(86.1,2.5),"xwOBA":(0.290,0.030),"Stuff+":(100.0,10.0)},
                     "Cutter": {"CalledStr%":(16.0,6.5),"SwStr%":(23.8,10.0),"CSW%":(28.3,7.5),"Chase%":(30.0,10.0),"ZWhiff%":(16.0,10.0),"Velo":(89.4,2.5),"xwOBA":(0.300,0.030),"Stuff+":(100.0,10.0)},
                 }
-                league_zone_contact = {}
+                league_zone_contact = {
+                    "Zone%":             16.5,
+                    "First Pitch Strike%": 60.0,
+                    "1-1 Strike%":       68.0,
+                    "AB < 3 Pitches%":   25.0,
+                    "R2K%":              18.0,
+                    "Swing%":            47.0,
+                    "Exit Velo":         88.5,
+                    "Launch Angle":      12.0,
+                    "HardHit%":          40.3,
+                    "BABIP":             0.295,
+                    "GB%":               44.0,
+                    "LD%":               20.0,
+                    "FB%":               36.0,
+                    "HR/FB%":            12.0,
+                    "SweetSpot%":        31.0,
+                    "Barrel%":           7.8,
+                }
                 _ss_set("baselines", baselines)
                 _ss_set("league_zone_contact", league_zone_contact)
                 lg = pd.DataFrame()  # no live pull needed
@@ -2418,7 +2435,56 @@ def main():
         st.divider()
 
         # -----------------------------------------------------
-        # HEATMAPS
+        # ── Game Log ─────────────────────────────────────────────────────────────
+        st.divider()
+        with st.expander("📋 Game Log", expanded=False):
+            if not sc.empty and "game_date" in sc.columns and "game_pk" in sc.columns:
+                gl_rows = []
+                game_pks = sc.groupby("game_pk")["game_date"].first().to_dict()
+                for gpk, gdate in sorted(game_pks.items(), key=lambda x: str(x[1]), reverse=True):
+                    try:
+                        import requests as _req2
+                        box = _req2.get(f"https://statsapi.mlb.com/api/v1/game/{gpk}/boxscore", timeout=8).json()
+                        for side in ["away","home"]:
+                            team_data = box.get("teams",{}).get(side,{})
+                            players = team_data.get("players",{})
+                            pitchers = team_data.get("pitchers",[])
+                            if not pitchers: continue
+                            starter_id = pitchers[0]
+                            p = players.get(f"ID{starter_id}",{})
+                            if int(p.get("person",{}).get("id",0)) != mlbam_id:
+                                continue
+                            stats = p.get("stats",{}).get("pitching",{})
+                            if stats.get("gamesStarted",0) == 0:
+                                continue
+                            # Opponent
+                            opp_side = "home" if side == "away" else "away"
+                            opp = box.get("teams",{}).get(opp_side,{}).get("team",{}).get("abbreviation","")
+                            # Format date
+                            try:
+                                d = pd.to_datetime(str(gdate))
+                                date_str = d.strftime("%m/%d/%y")
+                            except:
+                                date_str = str(gdate)[:10]
+                            gl_rows.append({
+                                "Date": date_str,
+                                "Opp": opp,
+                                "IP": stats.get("inningsPitched","—"),
+                                "H": stats.get("hits",0),
+                                "R": stats.get("earnedRuns",0),
+                                "BB": stats.get("baseOnBalls",0),
+                                "K": stats.get("strikeOuts",0),
+                                "Pitches": stats.get("pitchesThrown",0),
+                            })
+                            break
+                    except Exception:
+                        continue
+                if gl_rows:
+                    gl_df = pd.DataFrame(gl_rows).reset_index(drop=True)
+                    gl_fmt = {"H":"{:.0f}","R":"{:.0f}","BB":"{:.0f}","K":"{:.0f}","Pitches":"{:.0f}"}
+                    st.dataframe(gl_df.style.format(gl_fmt, na_rep="—"), use_container_width=True, hide_index=True)
+
+                # HEATMAPS
         # -----------------------------------------------------
         st.markdown("## HEATMAPS")
         st.caption("Fastballs / Offspeed / Breaking for LHH and RHH. Red = more frequent / harder contact; Blue = less.")
