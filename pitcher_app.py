@@ -1062,6 +1062,7 @@ def style_red_green(
     baseline_group_col: str | None = None,
     qualify_col: str | None = None,
     qualify_min: int = MIN_BASELINE_PITCHES,
+    vaa_fastball_only: bool = False,
 ):
     tmp = df.copy()
     sty = tmp.style
@@ -1136,6 +1137,50 @@ def style_red_green(
             return out
 
         sty = sty.apply(apply_col, subset=[c])
+
+    # VAA: shade only for fastball rows, vs fastball-only baseline
+    if vaa_fastball_only and "VAA" in tmp.columns and baseline_group_col and baseline_group_col in tmp.columns:
+        FASTBALL_NAMES = {PITCH_NAMES[k] for k in FASTBALLS if k in PITCH_NAMES}
+        # Compute fastball-only VAA mean/sd from baselines or from table
+        fb_vaa_vals = []
+        for pt in ["FF", "SI", "FT", "FC"]:
+            pt_name = PITCH_NAMES.get(pt, pt)
+            rows = tmp[tmp[baseline_group_col].astype(str) == pt_name]
+            if not rows.empty:
+                fb_vaa_vals.extend(pd.to_numeric(rows["VAA"], errors="coerce").dropna().tolist())
+        # Always use league fastball VAA baseline for proper context
+        # League 4-seam avg ~-4.2, range roughly -3.0 (elite flat) to -5.5 (steep)
+        fb_mu, fb_sd = -4.2, 0.55
+
+        def vaa_col_style(s):
+            out = []
+            for idx, v in s.items():
+                row = tmp.loc[idx]
+                pitch_name = str(row.get(baseline_group_col, ""))
+                if pitch_name not in FASTBALL_NAMES:
+                    out.append("")
+                    continue
+                val = pd.to_numeric(v, errors="coerce")
+                if pd.isna(val) or fb_sd == 0:
+                    out.append("")
+                    continue
+                # higher VAA = less steep = good for fastballs
+                z = (float(val) - fb_mu) / fb_sd
+                z = float(np.clip(z, -2.0, 2.0))
+                t = (z + 2.0) / 4.0
+                green = (64, 160, 92); red = (210, 78, 78); white = (255, 255, 255)
+                if abs(z) <= 0.35:
+                    out.append("background-color: rgb(255,255,255); color: black;")
+                elif t < 0.5:
+                    tt = t / 0.5
+                    r, g, b = _interp_rgb(red, white, tt)
+                    out.append(f"background-color: rgb({r},{g},{b}); color: black;")
+                else:
+                    tt = (t - 0.5) / 0.5
+                    r, g, b = _interp_rgb(white, green, tt)
+                    out.append(f"background-color: rgb({r},{g},{b}); color: black;")
+            return out
+        sty = sty.apply(vaa_col_style, subset=["VAA"])
 
     if pitch_col and pitch_col in tmp.columns:
         name_to_abbrev = {v: k for k, v in PITCH_NAMES.items()}
@@ -1493,6 +1538,20 @@ def build_usage_situation_table(sc: pd.DataFrame, hand: str) -> pd.DataFrame:
 # =========================================================
 # Plotting helpers (unchanged)
 # =========================================================
+def add_home_plate(ax):
+    """Draw a home plate shape at the bottom of the plot."""
+    from matplotlib.patches import Polygon
+    plate_w = 0.708  # 17 inches in feet
+    # Pentagon shape: flat top, angled bottom point
+    plate = np.array([
+        [-plate_w, 0.0],
+        [ plate_w, 0.0],
+        [ plate_w, -0.2],
+        [ 0.0,    -0.4],
+        [-plate_w, -0.2],
+    ])
+    ax.add_patch(Polygon(plate, closed=True, facecolor="white", edgecolor="black", linewidth=1.5, zorder=4))
+
 def add_strikezone(ax):
     rect = Rectangle(
         (STRIKEZONE["x0"], STRIKEZONE["z0"]),
@@ -1502,6 +1561,7 @@ def add_strikezone(ax):
         linewidth=2,
     )
     ax.add_patch(rect)
+    add_home_plate(ax)
 
 def add_batter_illustration(ax, hand: str):
     # For catcher POV: LHH stands on right side, RHH on left side
@@ -1608,6 +1668,7 @@ def plot_pitch_break_cloud(sc: pd.DataFrame, compact: bool = True):
     st.pyplot(fig, clear_figure=True)
 
 def plot_heatmap_contour(sc: pd.DataFrame, hand: str, pitch_group: str, mode: str):
+    from scipy.ndimage import gaussian_filter
     needed = ["plate_x", "plate_z", "stand", "pitch_group"]
     if not require_cols(sc, needed):
         st.info("Heatmaps need plate_x, plate_z, stand, pitch_group.")
@@ -1616,49 +1677,123 @@ def plot_heatmap_contour(sc: pd.DataFrame, hand: str, pitch_group: str, mode: st
     df = sc.dropna(subset=["plate_x", "plate_z", "stand", "pitch_group"]).copy()
     df = df[(df["stand"] == hand) & (df["pitch_group"] == pitch_group)]
     df = valid_pitch_rows(df)
+
+    fig, ax = plt.subplots(figsize=(4.0, 4.2))
+    ax.set_facecolor("white")
+    fig.patch.set_facecolor("white")
+
     if df.empty:
-        fig, ax = plt.subplots(figsize=(3.6, 3.6))
         add_strikezone(ax)
         add_batter_illustration(ax, hand)
-        ax.set_title(f"{pitch_group} vs {hand}HH — {mode}", fontsize=10)
-        ax.set_xlabel("Catcher POV")
-        ax.set_ylabel("Plate Height")
+        ax.set_title(f"{pitch_group} vs {hand}HH\n{mode}", fontsize=10)
         ax.set_xlim(-2.5, 2.5)
-        ax.set_ylim(-1.0, 5.0)
-        ax.text(0, 2.0, "No data", ha="center", va="center", fontsize=11, color="#aaaaaa")
+        ax.set_ylim(-0.5, 5.0)
+        ax.axis("off")
+        ax.text(0, 2.5, "No data", ha="center", va="center", fontsize=11, color="#aaaaaa")
         st.pyplot(fig, clear_figure=True)
         return
 
-    weights = None
-    if mode == "Hard Contact (EV)":
-        if "launch_speed" not in df.columns:
-            st.info("No launch_speed available for EV mode.")
-            return
-        df = df.dropna(subset=["launch_speed"]).copy()
-        if df.empty:
-            st.info("No batted-ball EV rows for this slice.")
-            return
-        weights = safe_num(df["launch_speed"]).fillna(0.0)
+    # Fine grid for smooth rendering
+    x_edges = np.linspace(-2.0, 2.0, 51)
+    z_edges = np.linspace(-0.5, 5.0, 56)
 
-    fig, ax = plt.subplots(figsize=(3.6, 3.6))
+    px = safe_num(df["plate_x"]).values
+    pz = safe_num(df["plate_z"]).values
 
-    if len(df) < 20 or df["plate_x"].nunique() < 3 or df["plate_z"].nunique() < 3:
-        ax.scatter(df["plate_x"], df["plate_z"], s=14, alpha=0.35)
-    else:
-        try:
-            sns.kdeplot(
-                data=df,
-                x="plate_x",
-                y="plate_z",
-                fill=True,
-                levels=9,
-                thresh=0.35,
-                weights=weights,
-                cmap="RdBu_r",
-                ax=ax,
+    freq_grid, _, _ = np.histogram2d(px, pz, bins=[x_edges, z_edges])
+    freq_smooth = gaussian_filter(freq_grid.astype(float), sigma=2.2)
+    # Tighter mask — only show cells with at least 18% of peak density
+    freq_mask = freq_smooth < (freq_smooth.max() * 0.18)
+
+    if mode == "Frequency":
+        grid = freq_smooth.copy()
+        grid = np.where(freq_mask, np.nan, grid)
+        grid = grid / np.nanmax(grid) if np.nanmax(grid) > 0 else grid
+        cmap = "RdYlBu_r"
+        vmin, vmax = 0.0, 1.0
+        label = "Frequency"
+
+    elif mode == "xwOBA":
+        xw_col = "estimated_woba_using_speedangle"
+        if xw_col not in df.columns:
+            xw_vals = np.full(len(df), np.nan)
+        else:
+            xw_vals = safe_num(df[xw_col]).values
+        w_grid = np.zeros((len(x_edges)-1, len(z_edges)-1))
+        c_grid = np.zeros_like(w_grid)
+        for xi, zi, wi in zip(px, pz, xw_vals):
+            if np.isnan(xi) or np.isnan(zi) or np.isnan(wi):
+                continue
+            ix = int(np.clip(np.searchsorted(x_edges[1:-1], xi), 0, len(x_edges)-2))
+            iz = int(np.clip(np.searchsorted(z_edges[1:-1], zi), 0, len(z_edges)-2))
+            w_grid[ix, iz] += wi
+            c_grid[ix, iz] += 1
+        w_smooth = gaussian_filter(w_grid, sigma=2.2)
+        c_smooth = gaussian_filter(c_grid, sigma=2.2)
+        with np.errstate(invalid="ignore"):
+            grid = np.where((c_smooth > 0.2) & (~freq_mask), w_smooth / c_smooth, np.nan)
+        # If all nan (no xwOBA data), fall back to frequency
+        if np.all(np.isnan(grid)):
+            grid = freq_smooth.copy()
+            grid = np.where(freq_mask, np.nan, grid)
+            grid = grid / np.nanmax(grid) if np.nanmax(grid) > 0 else grid
+            vmin, vmax = 0.0, 1.0
+            label = "Frequency (no xwOBA)"
+        else:
+            vmin, vmax = 0.200, 0.500
+            label = "xwOBA"
+        cmap = "RdYlBu_r"
+
+    elif mode == "Swing & Miss":
+        # Plot whiff locations directly as scatter dots — skip the heatmap grid
+        whiff_df = df[df["is_whiff"] == True].copy() if "is_whiff" in df.columns else pd.DataFrame()
+        add_strikezone(ax)
+        add_batter_illustration(ax, hand)
+        if whiff_df.empty:
+            ax.text(0, 2.5, "No whiffs", ha="center", va="center", fontsize=11, color="#aaaaaa")
+        else:
+            ax.scatter(
+                whiff_df["plate_x"], whiff_df["plate_z"],
+                s=28, alpha=0.55, color="#d62728", edgecolors="white", linewidths=0.4, zorder=3
             )
-        except Exception:
-            ax.scatter(df["plate_x"], df["plate_z"], s=14, alpha=0.35)
+        ax.set_title(f"{pitch_group} vs {hand}HH — Swing & Miss", fontsize=10)
+        ax.set_xlabel("Catcher POV")
+        ax.set_ylabel("Plate Height")
+        ax.set_xlim(-2.5, 2.5)
+        ax.set_ylim(-0.5, 5.0)
+        ax.set_facecolor("white")
+        st.pyplot(fig, clear_figure=True)
+        return
+        # dummy assignments to satisfy linter
+        grid, cmap, vmin, vmax, label = None, "RdYlBu_r", 0, 1, ""
+    else:
+        grid = freq_smooth.copy()
+        grid = np.where(freq_mask, np.nan, grid)
+        grid = grid / np.nanmax(grid) if np.nanmax(grid) > 0 else grid
+        cmap = "RdYlBu_r"
+        vmin, vmax = 0.0, 1.0
+        label = "Frequency"
+
+    # Plot as smooth image — white background, masked areas transparent
+    grid_T = np.ma.masked_invalid(grid.T)
+    ax.set_facecolor("white")
+    ax.imshow(
+        grid_T,
+        origin="lower",
+        extent=[x_edges[0], x_edges[-1], z_edges[0], z_edges[-1]],
+        aspect="auto",
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+        alpha=0.88,
+        interpolation="bilinear",
+    )
+
+    import matplotlib.cm as mcm
+    import matplotlib.colors as mcolors
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=mcolors.Normalize(vmin=vmin, vmax=vmax))
+    sm.set_array([])
+    plt.colorbar(sm, ax=ax, label=label, shrink=0.7, pad=0.02)
 
     add_strikezone(ax)
     add_batter_illustration(ax, hand)
@@ -1667,7 +1802,8 @@ def plot_heatmap_contour(sc: pd.DataFrame, hand: str, pitch_group: str, mode: st
     ax.set_xlabel("Catcher POV")
     ax.set_ylabel("Plate Height")
     ax.set_xlim(-2.5, 2.5)
-    ax.set_ylim(-1.0, 5.0)
+    ax.set_ylim(-0.5, 5.0)
+    ax.set_xticks([-2, -1, 0, 1, 2])
     st.pyplot(fig, clear_figure=True)
 
 # =========================================================
@@ -1865,7 +2001,7 @@ def main():
         end_date = st.date_input("End date", key="end_date")
 
         st.divider()
-        heat_mode = st.selectbox("Heatmap mode", ["Frequency", "Hard Contact (EV)"])
+        heat_mode = st.selectbox("Heatmap mode", ["Frequency", "xwOBA", "Swing & Miss"])
 
         st.divider()
         league_compare = st.checkbox(
@@ -2337,7 +2473,6 @@ def main():
                                 "Velo": "high_good",
                                 "Spin": "high_good",
                                 "Ext": "high_good",
-                                "VAA": "high_good",
                                 "CalledStr%": "high_good",
                                 "SwStr%": "high_good",
                                 "CSW%": "high_good",
@@ -2351,6 +2486,7 @@ def main():
                             baseline_group_col="Pitch",
                             qualify_col="Pitches",
                             qualify_min=MIN_BASELINE_PITCHES,
+                            vaa_fastball_only=True,
                         ),
                         use_container_width=True,
                         hide_index=True,
