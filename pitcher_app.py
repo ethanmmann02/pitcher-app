@@ -1435,6 +1435,21 @@ def compute_pitch_metrics(sc: pd.DataFrame) -> pd.DataFrame:
 
     all_row = {"Pitch": "All", "Pitch%": 100.0}
     all_row.update(one_block(df))
+
+    # Weighted Stuff+: pitch-count-weighted mean across arsenal
+    weighted_sp = float("nan")
+    numerator = 0.0
+    denominator = 0
+    for r in rows:
+        sp = r.get("Stuff+")
+        n = r.get("Pitches", 0)
+        if sp is not None and sp == sp and n > 0:
+            numerator += float(sp) * int(n)
+            denominator += int(n)
+    if denominator > 0:
+        weighted_sp = round(numerator / denominator)
+    all_row["Stuff+"] = weighted_sp
+
     out = pd.concat([out, pd.DataFrame([all_row])], ignore_index=True)
 
     # order with Stuff+ after xwOBA
@@ -1442,7 +1457,7 @@ def compute_pitch_metrics(sc: pd.DataFrame) -> pd.DataFrame:
         "Pitch", "Pitch%", "Pitches",
         "Velo", "iVB", "HB", "Spin", "Ext", "VAA", "vRel", "hRel",
         "CalledStr%", "SwStr%", "CSW%", "Chase%", "ZWhiff%",
-        "xwOBA",
+        "xwOBA", "Stuff+",
     ]
     out = out[[c for c in order if c in out.columns]]
     return out
@@ -1456,7 +1471,7 @@ def apply_all_row_mask(pm: pd.DataFrame) -> pd.DataFrame:
         "Pitch", "Pitches",
         "Ext", "VAA",
         "CalledStr%", "SwStr%", "CSW%", "Chase%", "ZWhiff%",
-        "xwOBA",
+        "xwOBA", "Stuff+",
     }
     mask_all = out["Pitch"].astype(str).eq("All")
     for c in out.columns:
@@ -2479,6 +2494,7 @@ def main():
                                 "Chase%": "high_good",
                                 "ZWhiff%": "high_good",
                                 "xwOBA": "low_good",
+                                "Stuff+": "high_good",
                             },
                             fmt_map=fmt_map,
                             pitch_col="Pitch",
