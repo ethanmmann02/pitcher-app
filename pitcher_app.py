@@ -1312,36 +1312,44 @@ def compute_stuff_plus_for_df(df: pd.DataFrame) -> pd.Series:
     features = payload["features"]
     pred_mean = payload.get("pred_mean", 0.0)
     pred_std  = payload.get("pred_std", 1.0)
-    d = df.copy()
-    # Use raw Statcast units — no unit conversion
-    d["ax"]            = safe_num(d.get("ax", np.nan))
-    d["az"]            = safe_num(d.get("az", np.nan))
-    d["release_pos_z"] = safe_num(d.get("release_pos_z", np.nan))
-    d["extension"]     = safe_num(d.get("release_extension", np.nan))
-    d["release_spin_rate"] = safe_num(d.get("release_spin_rate", np.nan))
-    d["release_speed"] = safe_num(d.get("release_speed", np.nan))
-    d["arm_angle"]     = safe_num(d.get("arm_angle", np.nan))
-    d["stand"]    = (d["stand"].astype(str).str.upper() == "R").astype(int) if "stand" in d.columns else 0
+
+    orig_index = df.index
+    d = df.reset_index(drop=True).copy()
+
+    # Match training script exactly: abs(ax)*12, az*12, release_pos_z*12
+    d["ax"]               = safe_num(d["ax"]).abs() * 12 if "ax" in d.columns else np.nan
+    d["az"]               = safe_num(d["az"]) * 12 if "az" in d.columns else np.nan
+    d["release_pos_z"]    = safe_num(d["release_pos_z"]) * 12 if "release_pos_z" in d.columns else np.nan
+    d["extension"]        = safe_num(d["release_extension"]) if "release_extension" in d.columns else np.nan
+    d["release_spin_rate"]= safe_num(d["release_spin_rate"]) if "release_spin_rate" in d.columns else np.nan
+    d["release_speed"]    = safe_num(d["release_speed"]) if "release_speed" in d.columns else np.nan
+    d["arm_angle"]        = safe_num(d["arm_angle"]) if "arm_angle" in d.columns else np.nan
+    d["stand"]            = (d["stand"].astype(str).str.upper() == "R").astype(int) if "stand" in d.columns else 0
+
     fb_mask = d["pitch_type"].isin(list(FASTBALLS)) if "pitch_type" in d.columns else pd.Series(False, index=d.index)
     if fb_mask.any() and "pitcher" in d.columns:
-        fb_ref = d[fb_mask].groupby("pitcher")[["release_speed","az"]].mean()
-        fb_ref.columns = ["fb_speed","fb_az"]
+        fb_ref = d[fb_mask].groupby("pitcher")[["release_speed","az"]].mean().reset_index()
+        fb_ref.columns = ["pitcher","fb_speed","fb_az"]
         d = d.merge(fb_ref, on="pitcher", how="left")
         d["delta_release_speed"] = d["release_speed"] - d["fb_speed"]
         d["delta_az"]            = d["az"]            - d["fb_az"]
     else:
         d["delta_release_speed"] = 0.0
-        d["delta_az"] = 0.0
+        d["delta_az"]            = 0.0
+
     feat = pd.DataFrame(index=d.index)
     for c in features:
         feat[c] = d[c] if c in d.columns else np.nan
     feat = feat.fillna(feat.mean())
     valid = feat.notna().all(axis=1)
-    result = pd.Series(np.nan, index=df.index)
+
+    result = pd.Series(np.nan, index=range(len(d)))
     if valid.sum() > 0:
         preds = model.predict(feat[valid])
         scaled = ((preds - pred_mean) / pred_std) * 10 + 100
         result.iloc[valid.values.nonzero()[0]] = scaled
+
+    result.index = orig_index
     return result
 
 def compute_pitch_metrics(sc: pd.DataFrame) -> pd.DataFrame:
