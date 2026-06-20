@@ -1313,24 +1313,15 @@ def compute_stuff_plus_for_df(df: pd.DataFrame) -> pd.Series:
     pred_mean = payload.get("pred_mean", 0.0)
     pred_std  = payload.get("pred_std", 1.0)
     d = df.copy()
-    d["ax"]            = safe_num(d.get("ax", np.nan)).abs() * 12
-    d["az"]            = safe_num(d.get("az", np.nan)) * 12
-    d["release_pos_z"] = safe_num(d.get("release_pos_z", np.nan)) * 12
-    d["plate_x"]       = safe_num(d.get("plate_x", np.nan)) * 12
-    d["plate_z"]       = safe_num(d.get("plate_z", np.nan)) * 12
+    # Use raw Statcast units — no unit conversion
+    d["ax"]            = safe_num(d.get("ax", np.nan))
+    d["az"]            = safe_num(d.get("az", np.nan))
+    d["release_pos_z"] = safe_num(d.get("release_pos_z", np.nan))
     d["extension"]     = safe_num(d.get("release_extension", np.nan))
     d["release_spin_rate"] = safe_num(d.get("release_spin_rate", np.nan))
     d["release_speed"] = safe_num(d.get("release_speed", np.nan))
     d["arm_angle"]     = safe_num(d.get("arm_angle", np.nan))
-    d["balls"]         = safe_num(d.get("balls", np.nan))
-    d["strikes"]       = safe_num(d.get("strikes", np.nan))
     d["stand"]    = (d["stand"].astype(str).str.upper() == "R").astype(int) if "stand" in d.columns else 0
-    d["p_throws"] = (d["p_throws"].astype(str).str.upper() == "R").astype(int) if "p_throws" in d.columns else 0
-    for col in ["on_1b","on_2b","on_3b"]:
-        if col in d.columns:
-            d[col] = d[col].apply(lambda x: 0 if pd.isna(x) else 1)
-        else:
-            d[col] = 0
     fb_mask = d["pitch_type"].isin(list(FASTBALLS)) if "pitch_type" in d.columns else pd.Series(False, index=d.index)
     if fb_mask.any() and "pitcher" in d.columns:
         fb_ref = d[fb_mask].groupby("pitcher")[["release_speed","az"]].mean()
@@ -1339,14 +1330,11 @@ def compute_stuff_plus_for_df(df: pd.DataFrame) -> pd.Series:
         d["delta_release_speed"] = d["release_speed"] - d["fb_speed"]
         d["delta_az"]            = d["az"]            - d["fb_az"]
     else:
-        d["fb_speed"] = d["release_speed"]
-        d["fb_az"] = d["az"]
         d["delta_release_speed"] = 0.0
         d["delta_az"] = 0.0
     feat = pd.DataFrame(index=d.index)
     for c in features:
         feat[c] = d[c] if c in d.columns else np.nan
-    # Fill missing values with column mean instead of dropping
     feat = feat.fillna(feat.mean())
     valid = feat.notna().all(axis=1)
     result = pd.Series(np.nan, index=df.index)
